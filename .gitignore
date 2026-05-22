@@ -1,0 +1,27 @@
+# Pixi environment (installed packages; config.toml is project-specific so track it)
+.pixi/*
+!.pixi/config.toml
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Downloaded reference data — re-created by `pixi run hcv-cluster refs`
+refs/
+hcv_refs/
+
+# Workflow outputs — add any custom --outdir paths here
+results/
+new_results/
+
+# Log files written by the prep stage alongside output prefixes
+*.log
+
+# macOS
+.DS_Store
+
+# Claude Code project directory
+.claude/

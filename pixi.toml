@@ -1,0 +1,19 @@
+[workspace]
+authors = ["charlesfoster <charles.foster@unsw.edu.au>"]
+channels = ["conda-forge", "bioconda"]
+name = "clustering_workflow"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+hcv-cluster = "python hcv_cluster.py"
+hcv-workflow = "python hcv_workflow.py"
+test = "pytest"
+
+[dependencies]
+python = ">=3.11"
+biopython = ">=1.83"
+mafft = ">=7"
+minimap2 = ">=2.26"
+tn93 = ">=1.0.15"
+pytest = ">=8"

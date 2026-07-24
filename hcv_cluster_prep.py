@@ -178,7 +178,7 @@ REGION_ALIASES = {
     "ns5-b": "ns5b",
 }
 REGION_PRESETS = {
-    "structural": "core-e2",
+    "structural": "core-e2-nohvr1",
     "envelope": "e1-e2",
     "nonstructural": "ns2-ns5b",
     "all-cds": "cds",
@@ -186,6 +186,13 @@ REGION_PRESETS = {
     "coding": "cds",
     "polyprotein": "cds",
 }
+
+# HVR1 is the N-terminal 27 aa (81 nt) of E2, immediately following the E1/E2
+# cleavage site (H77 polyprotein residues 384-410; E2 itself starts at residue
+# 384). See docs/threshold_rationale.md for citations. "core-e2-nohvr1" excises
+# exactly this span from the contiguous Core-through-E2 region; "core-e2" keeps
+# the full, HVR1-inclusive span unchanged.
+HVR1_LENGTH_NT = 81
 
 DIRECT_BOUNDARY_FEATURE_TYPES = {
     "mat_peptide",
@@ -953,10 +960,40 @@ def split_region_expression(expression: str) -> list[str]:
     return [part for part in re.split(r"[+,]", expression) if part]
 
 
+def validate_region_syntax(expression: str) -> str | None:
+    """Check that `expression` is a well-formed region expression, without needing
+    a loaded reference. Returns None if valid, else a human-readable error message."""
+    expanded = expand_region_expression(expression)
+    parts = split_region_expression(expanded)
+    if not parts:
+        return f"Region expression '{expression}' is empty"
+
+    known = ", ".join(CANONICAL_REGION_ORDER)
+    presets = ", ".join(sorted(REGION_PRESETS))
+    for part in parts:
+        if part in {"cds", "polyprotein", "core-e2-nohvr1"} or part in REGION_PRESETS:
+            continue
+        if "-" in part:
+            left, right = part.split("-", 1)
+            left_name = canonical_region_name(left)
+            right_name = canonical_region_name(right)
+            if left_name is not None and right_name is not None:
+                if CANONICAL_REGION_INDEX[left_name] > CANONICAL_REGION_INDEX[right_name]:
+                    return f"Region range '{part}' is reversed ({left_name} comes after {right_name})"
+                continue
+        if canonical_region_name(part) is not None:
+            continue
+        return f"Unknown region '{part}'. Known regions: {known}. Presets: {presets}, cds."
+    return None
+
+
 def resolve_region_part(part: str, regions: dict[str, RegionSegment]) -> list[RegionSegment]:
     preset = REGION_PRESETS.get(part)
     if preset is not None:
         return resolve_region_part(preset, regions)
+
+    if part == "core-e2-nohvr1":
+        return resolve_core_e2_nohvr1(regions)
 
     if part in {"cds", "polyprotein"}:
         return [require_region(part, regions)]
@@ -1006,6 +1043,31 @@ def resolve_region_range(
     )
 
 
+def mask_hvr1_from_e2(e2: RegionSegment) -> RegionSegment:
+    """E2 with its N-terminal HVR1 (first HVR1_LENGTH_NT nt, immediately following
+    the E1/E2 cleavage site) excised, matching Bartlett et al. 2017's Core-early-E2
+    definition. See docs/threshold_rationale.md."""
+    trimmed_start = e2.start + HVR1_LENGTH_NT
+    if trimmed_start > e2.end:
+        raise HcvPrepError(
+            f"E2 region ({e2.start}-{e2.end}, {e2.length} nt) is shorter than the "
+            f"{HVR1_LENGTH_NT} nt HVR1 mask; cannot construct 'core-e2-nohvr1' for this reference"
+        )
+    return RegionSegment(
+        name="e2-nohvr1",
+        start=trimmed_start,
+        end=e2.end,
+        source=e2.source,
+        detail=f"{e2.detail}; HVR1 (first {HVR1_LENGTH_NT} nt of E2) masked",
+    )
+
+
+def resolve_core_e2_nohvr1(regions: dict[str, RegionSegment]) -> list[RegionSegment]:
+    core_through_e1 = resolve_region_range("core", "e1", regions)
+    e2 = require_region("e2", regions)
+    return [core_through_e1, mask_hvr1_from_e2(e2)]
+
+
 def merge_region_segments(segments: Iterable[RegionSegment]) -> list[RegionSegment]:
     sorted_segments = sorted(segments, key=lambda segment: (segment.start, segment.end, segment.name))
     merged: list[RegionSegment] = []
@@ -1034,6 +1096,8 @@ def known_region_help(regions: dict[str, RegionSegment]) -> str:
     names = [name for name in CANONICAL_REGION_ORDER if name in regions]
     if "cds" in regions:
         names.append("cds")
+    if "core" in regions and "e1" in regions and "e2" in regions:
+        names.append("core-e2-nohvr1")
     names.extend(sorted(REGION_PRESETS))
     return ", ".join(dict.fromkeys(names))
 
@@ -1655,9 +1719,10 @@ def write_outputs(
     retained: list[FastaRecord] = []
     qc_rows: list[dict[str, str | int | float | bool]] = []
     removal_reason = coverage_reason_slug(selection)
-    core_e2_start = selection.start if selection.expression == "core-e2" else ""
-    core_e2_end = selection.end if selection.expression == "core-e2" else ""
-    core_e2_length = selection.length if selection.expression == "core-e2" else ""
+    is_core_e2_family = selection.expression in {"core-e2", "core-e2-nohvr1"}
+    core_e2_start = selection.start if is_core_e2_family else ""
+    core_e2_end = selection.end if is_core_e2_family else ""
+    core_e2_length = selection.length if is_core_e2_family else ""
     for record in records:
         sample_id = record.header
         trimmed = extracted[sample_id]
@@ -1828,7 +1893,7 @@ def command_prep_align(args: argparse.Namespace) -> int:
     )
     region_expression = args.region
     if region_expression is None:
-        region_expression = "cds" if args.region_strategy == "max-usable" else "core-e2"
+        region_expression = "cds" if args.region_strategy == "max-usable" else "core-e2-nohvr1"
 
     search_selection = resolve_region_selection(
         region_expression,
@@ -1915,8 +1980,9 @@ def build_parser() -> argparse.ArgumentParser:
     align_parser.add_argument(
         "--region",
         help=(
-            "Reference-anchored region expression. Defaults to core-e2 for fixed mode and cds for "
-            "max-usable mode. Examples: core, e1-e2, core-e2, ns3, ns5a-ns5b, core-e2+ns3, cds."
+            "Reference-anchored region expression. Defaults to core-e2-nohvr1 (Core-through-E2, "
+            "HVR1 masked) for fixed mode and cds for max-usable mode. Examples: core, e1-e2, "
+            "core-e2-nohvr1, core-e2 (HVR1 included), ns3, ns5a-ns5b, core-e2-nohvr1+ns3, cds."
         ),
     )
     align_parser.add_argument(

@@ -7,6 +7,7 @@ version = "0.1.0"
 
 [tasks]
 hcv-cluster = "python hcv_cluster.py"
+hcv-cluster-gui = "streamlit run hcv_cluster_gui.py"
 hcv-workflow = "python hcv_workflow.py"
 test = "pytest"
 
@@ -17,3 +18,7 @@ mafft = ">=7"
 minimap2 = ">=2.26"
 tn93 = ">=1.0.15"
 pytest = ">=8"
+streamlit = ">=1.32"
+networkx = ">=3.2"
+plotly = ">=5.20"
+python-kaleido = ">=1.3.0,<2"

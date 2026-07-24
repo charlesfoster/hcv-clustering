@@ -300,6 +300,21 @@ def merge_cluster_tables(inputs: Iterable[tuple[str, Path]], output: Path) -> No
         writer.writerows(sorted(rows, key=lambda row: (str(row["genotype"]), str(row["sample_id"]))))
 
 
+def merge_link_tables(inputs: Iterable[tuple[str, Path]], output: Path) -> None:
+    rows: list[dict[str, str]] = []
+    for _genotype, path in inputs:
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                rows.append({"source": row["source"], "target": row["target"], "distance": row["distance"]})
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("source", "target", "distance"))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def run_tn93(args: argparse.Namespace) -> int:
     executable = shutil.which(args.tn93) if not Path(args.tn93).exists() else args.tn93
     if executable is None:

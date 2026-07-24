@@ -2,12 +2,15 @@
 import argparse
 import csv
 import gzip
+import logging
 import shutil
 import subprocess
 import sys
 import tempfile
 from collections import OrderedDict, defaultdict
 from pathlib import Path
+
+import hcv_cluster_prep
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -124,6 +127,24 @@ def parse_fasta(path):
     return records
 
 
+def normalize_records(records):
+    """Strip alignment-gap characters and non-IUPAC bases before minimap2 sees the
+    sequences, so pre-aligned/exported FASTA input doesn't inflate query_length and
+    tank query_coverage. Mirrors hcv_cluster_prep.normalize_input_record."""
+    logger = logging.getLogger(__name__)
+    normalized = OrderedDict()
+    for query_id, record in records.items():
+        fasta_record = hcv_cluster_prep.FastaRecord(header=query_id, sequence=record["sequence"])
+        try:
+            sequence = hcv_cluster_prep.normalize_input_record(fasta_record, logger).sequence
+        except hcv_cluster_prep.HcvPrepError:
+            # Empty after stripping gaps/whitespace; leave blank so it falls through
+            # to the existing "no_alignment" qc_fail path instead of crashing the batch.
+            sequence = ""
+        normalized[query_id] = {"description": record["description"], "sequence": sequence}
+    return normalized
+
+
 def parse_reference_ids(path):
     reference_ids = []
     with open_text(path) as handle:
@@ -152,7 +173,7 @@ def shell_split(value):
     return shlex.split(value)
 
 
-def run_minimap2(args, paf_path):
+def run_minimap2(args, query_fasta_path, paf_path):
     executable = shutil.which(args.minimap2) if not Path(args.minimap2).exists() else args.minimap2
     if executable is None:
         raise RuntimeError(
@@ -168,7 +189,7 @@ def run_minimap2(args, paf_path):
         str(args.max_secondary),
         *shell_split(args.extra_minimap2_args),
         str(args.panel_fasta),
-        str(args.input),
+        str(query_fasta_path),
     ]
     with open(paf_path, "w", encoding="utf-8") as paf_handle:
         completed = subprocess.run(command, stdout=paf_handle, stderr=subprocess.PIPE, text=True, check=False)
@@ -371,6 +392,14 @@ def fasta_wrap(sequence, width=80):
         yield sequence[index : index + width]
 
 
+def write_records_fasta(path, records):
+    with open(path, "w", encoding="utf-8") as handle:
+        for record in records.values():
+            handle.write(f">{record['description']}\n")
+            for line in fasta_wrap(record["sequence"]):
+                handle.write(f"{line}\n")
+
+
 def write_genotype_fastas(outdir, records, rows):
     by_genotype = defaultdict(list)
     for row in rows:
@@ -408,13 +437,16 @@ def main(argv=None):
     records = parse_fasta(args.input)
     if not records:
         raise ValueError(f"Input FASTA contains no sequences: {args.input}")
+    records = normalize_records(records)
     if not parse_reference_ids(args.panel_fasta):
         raise ValueError(f"Reference-panel FASTA contains no sequences: {args.panel_fasta}")
 
     keep_paf_path = args.output_csv.with_suffix(".paf")
     with tempfile.TemporaryDirectory(prefix="hcv_genotype_", dir=args.outdir) as tmpdir:
+        query_fasta_path = Path(tmpdir) / "normalized_query.fasta"
+        write_records_fasta(query_fasta_path, records)
         paf_path = keep_paf_path if args.keep_paf else Path(tmpdir) / "competitive.paf"
-        run_minimap2(args, paf_path)
+        run_minimap2(args, query_fasta_path, paf_path)
         hits_by_query = parse_paf(paf_path)
 
     rows = build_assignment_rows(records, hits_by_query, args)

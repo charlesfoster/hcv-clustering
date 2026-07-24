@@ -13,23 +13,39 @@ from pathlib import Path
 
 import assign_hcv_genotypes_from_fasta
 import hcv_cluster_prep
+import hcv_cluster_viz
 import hcv_workflow
 
 
-GENOTYPE_THRESHOLDS: dict[str, float] = {
-    "1a": 0.012,
-    "1b": 0.012,
-    "2a": 0.015,
-    "2b": 0.015,
-    "3a": 0.015,
+# Evidence-based per-region defaults; see docs/threshold_rationale.md for citations
+# and the reasoning behind these specific values. Deliberately NOT genotype-split:
+# the HCV Core-E2 literature applies a single threshold across genotypes, and the
+# only Australian genotype-specific number available (different region and metric)
+# does not support a 1a/1b-vs-rest split, so a genotype split isn't defensible as
+# evidence-based.
+#
+# "core-e2-nohvr1" (the default region) matches Bartlett et al. 2017's Core-early-E2
+# TN93 pairwise/connected-components network directly (same metric, same clustering
+# algorithm as this pipeline) — the strongest available precedent. "core-e2" (HVR1
+# included) uses Lamoury et al. 2015's HVR1-inclusive Core-E2 value instead, since
+# masking and threshold are a coupled specification, not independently swappable.
+REGION_THRESHOLDS: dict[str, float] = {
+    "core-e2-nohvr1": 0.03,
+    "core-e2": 0.045,
+    "ns5b": 0.015,
 }
-FALLBACK_THRESHOLD: float = 0.015
+FALLBACK_THRESHOLD: float = REGION_THRESHOLDS["core-e2-nohvr1"]
 
 
-def resolve_threshold(genotype: str, user_threshold: float | None) -> float:
+def resolve_threshold(region: str, user_threshold: float | None) -> float:
     if user_threshold is not None:
         return user_threshold
-    return GENOTYPE_THRESHOLDS.get(genotype.lower(), FALLBACK_THRESHOLD)
+    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    return REGION_THRESHOLDS.get(canonical_region, FALLBACK_THRESHOLD)
+
+
+def region_threshold_is_evidence_based(region: str) -> bool:
+    return hcv_cluster_prep.expand_region_expression(region) in REGION_THRESHOLDS
 
 
 def compute_snp_distances_detailed(
@@ -118,6 +134,37 @@ def _read_cluster_stats(clusters_path: Path) -> dict[str, int]:
     return {"total": len(rows), "singletons": singletons, "n_multi": len(multi_ids), "largest": largest}
 
 
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _render_cluster_plot(
+    plot_network: str,
+    hide_singletons: bool,
+    genotype_dir: Path,
+    clusters_csv: Path,
+    links_csv: Path,
+    file_prefix: str,
+) -> None:
+    if plot_network == "none":
+        return
+    node_rows = _read_csv_rows(clusters_csv)
+    edge_rows = _read_csv_rows(links_csv)
+    if hide_singletons:
+        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+    if not node_rows:
+        return
+    try:
+        fig = hcv_cluster_viz.build_network_figure(node_rows, edge_rows)
+        if plot_network in ("png", "both"):
+            fig.write_image(genotype_dir / f"{file_prefix}network.png", scale=2)
+        if plot_network in ("html", "both"):
+            fig.write_html(genotype_dir / f"{file_prefix}network.html", include_plotlyjs=True)
+    except Exception as exc:
+        print(f"WARNING: could not render network plot for {genotype_dir.name}: {exc}")
+
+
 def command_run(args: argparse.Namespace) -> int:
     outdir: Path = args.outdir
     input_path: Path = Path(args.input)
@@ -139,7 +186,7 @@ def command_run(args: argparse.Namespace) -> int:
             prefix = genotype_dir / "prep"
             genotype_fasta = genotype_fasta_dir / f"hcv_{genotype}.fasta"
             clustering_fasta = Path(f"{prefix}.clustering.fasta")
-            threshold = resolve_threshold(genotype, args.threshold)
+            threshold = resolve_threshold(args.region, args.threshold)
             prep_cmd = [
                 "hcv_cluster_prep", "prep-align",
                 "--input", str(genotype_fasta),
@@ -207,10 +254,18 @@ def command_run(args: argparse.Namespace) -> int:
     }
     gt_summary = ", ".join(f"{gt} ({gt_counts[gt]})" for gt in genotypes)
     print(f"--> {len(genotypes)} subtype(s) found: {gt_summary}")
+    if args.threshold is None and not region_threshold_is_evidence_based(args.region):
+        print(
+            f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
+            f"using the core-E2 default ({FALLBACK_THRESHOLD:.3g}) as a starting point. "
+            "See docs/threshold_rationale.md and consider passing --threshold explicitly."
+        )
     print()
 
     cluster_tables: list[tuple[str, Path]] = []
     snp_cluster_tables: list[tuple[str, Path]] = []
+    link_tables: list[tuple[str, Path]] = []
+    snp_link_tables: list[tuple[str, Path]] = []
 
     for genotype in genotypes:
         print(f"Analysing subtype: {genotype}")
@@ -256,7 +311,7 @@ def command_run(args: argparse.Namespace) -> int:
             pct = f"{qc_st['passed'] / qc_st['total'] * 100:.0f}%" if qc_st["total"] else "n/a"
             print(f"--> {qc_st['total']} sequences, {qc_st['passed']} passed QC ({pct})")
 
-        threshold = resolve_threshold(genotype, args.threshold)
+        threshold = resolve_threshold(args.region, args.threshold)
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
 
         if args.distance in ("tn93", "both"):
@@ -293,12 +348,16 @@ def command_run(args: argparse.Namespace) -> int:
             )
             hcv_workflow.command_cluster(cluster_args)
             cluster_tables.append((genotype, clusters_csv))
+            link_tables.append((genotype, links_csv))
             cl_st = _read_cluster_stats(clusters_csv)
             metric = "TN93" if args.distance == "both" else "TN93"
             print(
                 f"--> {metric} (threshold {threshold:.4g}): "
                 f"{cl_st['n_multi']} cluster(s), {cl_st['singletons']} singleton(s), "
                 f"largest: {cl_st['largest']}"
+            )
+            _render_cluster_plot(
+                args.plot_network, args.plot_hide_singletons, genotype_dir, clusters_csv, links_csv, ""
             )
 
         if args.distance in ("snp", "both"):
@@ -326,20 +385,33 @@ def command_run(args: argparse.Namespace) -> int:
             hcv_workflow.command_cluster(cluster_args)
             if args.distance == "snp":
                 cluster_tables.append((genotype, snp_clusters_csv))
+                link_tables.append((genotype, snp_links_csv))
             else:
                 snp_cluster_tables.append((genotype, snp_clusters_csv))
+                snp_link_tables.append((genotype, snp_links_csv))
             snp_st = _read_cluster_stats(snp_clusters_csv)
             print(
                 f"--> SNP   (threshold {threshold:.4g}): "
                 f"{snp_st['n_multi']} cluster(s), {snp_st['singletons']} singleton(s), "
                 f"largest: {snp_st['largest']}"
             )
+            snp_file_prefix = "" if args.distance == "snp" else "snp_"
+            _render_cluster_plot(
+                args.plot_network,
+                args.plot_hide_singletons,
+                genotype_dir,
+                snp_clusters_csv,
+                snp_links_csv,
+                snp_file_prefix,
+            )
 
         print()
 
     hcv_workflow.merge_cluster_tables(cluster_tables, outdir / "clusters.csv")
+    hcv_workflow.merge_link_tables(link_tables, outdir / "links.csv")
     if args.distance == "both":
         hcv_workflow.merge_cluster_tables(snp_cluster_tables, outdir / "clusters.snp.csv")
+        hcv_workflow.merge_link_tables(snp_link_tables, outdir / "links.snp.csv")
 
     print(f"Done. Results written to: {outdir}")
     return 0
@@ -404,7 +476,12 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         metavar="FLOAT",
         type=float,
         default=None,
-        help="Maximum distance for cluster linking. Default: 0.012 for 1a/1b, 0.015 for all others.",
+        help=(
+            "Maximum distance for cluster linking. Default: region-dependent "
+            "(0.03 for core-e2-nohvr1, the default region; 0.045 for core-e2 "
+            "with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
+            "see docs/threshold_rationale.md)."
+        ),
     )
     run_parser.add_argument(
         "-d", "--distance",
@@ -422,15 +499,17 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "-r", "--region",
         metavar="EXPR",
-        default="core-e2",
+        default="core-e2-nohvr1",
         help=(
-            "Reference-anchored region expression (default: core-e2). "
+            "Reference-anchored region expression (default: core-e2-nohvr1, i.e. "
+            "Core-through-E2 with HVR1 masked — see docs/threshold_rationale.md). "
             "Individual regions: core e1 e2 p7 ns2 ns3 ns4a ns4b ns5a ns5b. "
-            "Named presets: structural (=core-e2), envelope (=e1-e2), "
+            "core-e2 is the same span with HVR1 included. "
+            "Named presets: structural (=core-e2-nohvr1), envelope (=e1-e2), "
             "nonstructural (=ns2-ns5b), cds (whole coding sequence). "
             "Range syntax: first-last selects all regions from first through last "
             "(e.g. e1-e2, ns3-ns5b). "
-            "Union syntax: a+b includes both (e.g. core-e2+ns3, e1-e2+ns5a)."
+            "Union syntax: a+b includes both (e.g. core-e2-nohvr1+ns3, e1-e2+ns5a)."
         ),
     )
     run_parser.add_argument(
@@ -608,6 +687,22 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help=adv("Print commands without executing them"),
+    )
+    run_parser.add_argument(
+        "--plot-network",
+        metavar="CHOICE",
+        choices=("none", "png", "html", "both"),
+        default="none",
+        help=adv(
+            "Render a cluster network plot per genotype (and metric, if --distance both) "
+            "into by_genotype/<genotype>/. png: static image. html: interactive, opens in a "
+            "browser. both: write both. Default: none."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-hide-singletons",
+        action="store_true",
+        help=adv("Omit singleton (unclustered) sequences from --plot-network output"),
     )
     run_parser.set_defaults(func=command_run)
 

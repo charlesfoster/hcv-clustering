@@ -13,9 +13,14 @@ htmlcov/
 refs/
 hcv_refs/
 
-# Workflow outputs — add any custom --outdir paths here
+# Test datasets
+test_data/
+
+# Workflow outputs — any --outdir starting with "results" (results/, new_results/,
+# results_gui/, and any custom name like results_alice/ typed into the GUI)
 results/
 new_results/
+results_*/
 
 # Log files written by the prep stage alongside output prefixes
 *.log

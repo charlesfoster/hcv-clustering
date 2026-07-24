@@ -29,7 +29,7 @@ Within a subtype, contemporary sequences differ by roughly **1–5%** in the cor
 1a_sample_A vs 3a_sample_X  →  0.27    ← between-subtype: evolutionary divergence
 ```
 
-The clustering threshold (e.g. 0.015) is calibrated specifically for the within-subtype distribution. In a mixed matrix it is either irrelevant (no cross-subtype pairs will link, so the threshold is redundant) or — if there are alignment artefacts producing spuriously low cross-subtype distances — it becomes a source of false positive clusters.
+The clustering threshold (e.g. 0.03 for the default `core-e2-nohvr1` region; see [`docs/threshold_rationale.md`](threshold_rationale.md)) is calibrated specifically for the within-subtype distribution. In a mixed matrix it is either irrelevant (no cross-subtype pairs will link, so the threshold is redundant) or — if there are alignment artefacts producing spuriously low cross-subtype distances — it becomes a source of false positive clusters.
 
 ---
 

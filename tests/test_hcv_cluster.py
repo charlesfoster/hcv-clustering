@@ -10,23 +10,41 @@ import hcv_workflow
 
 
 def test_resolve_threshold_returns_user_value() -> None:
-    assert hcv_cluster.resolve_threshold("1a", 0.050) == 0.050
+    assert hcv_cluster.resolve_threshold("core-e2", 0.030) == 0.030
 
 
-def test_resolve_threshold_genotype_1a() -> None:
-    assert hcv_cluster.resolve_threshold("1a", None) == 0.012
+def test_resolve_threshold_core_e2_nohvr1_default() -> None:
+    assert hcv_cluster.resolve_threshold("core-e2-nohvr1", None) == 0.03
 
 
-def test_resolve_threshold_genotype_3a() -> None:
-    assert hcv_cluster.resolve_threshold("3a", None) == 0.015
+def test_resolve_threshold_core_e2_full() -> None:
+    assert hcv_cluster.resolve_threshold("core-e2", None) == 0.045
 
 
-def test_resolve_threshold_unlisted_genotype_returns_fallback() -> None:
-    assert hcv_cluster.resolve_threshold("4a", None) == hcv_cluster.FALLBACK_THRESHOLD
+def test_resolve_threshold_ns5b() -> None:
+    assert hcv_cluster.resolve_threshold("ns5b", None) == 0.015
+
+
+def test_resolve_threshold_preset_expands_before_lookup() -> None:
+    assert hcv_cluster.resolve_threshold("structural", None) == hcv_cluster.resolve_threshold(
+        "core-e2-nohvr1", None
+    )
+
+
+def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
+    assert hcv_cluster.resolve_threshold("e1-e2", None) == hcv_cluster.FALLBACK_THRESHOLD
 
 
 def test_resolve_threshold_case_insensitive() -> None:
-    assert hcv_cluster.resolve_threshold("1A", None) == hcv_cluster.resolve_threshold("1a", None)
+    assert hcv_cluster.resolve_threshold("NS5B", None) == hcv_cluster.resolve_threshold("ns5b", None)
+
+
+def test_region_threshold_is_evidence_based() -> None:
+    assert hcv_cluster.region_threshold_is_evidence_based("core-e2-nohvr1") is True
+    assert hcv_cluster.region_threshold_is_evidence_based("core-e2") is True
+    assert hcv_cluster.region_threshold_is_evidence_based("ns5b") is True
+    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2") is False
+    assert hcv_cluster.region_threshold_is_evidence_based("cds") is False
 
 
 # ---------------------------------------------------------------------------

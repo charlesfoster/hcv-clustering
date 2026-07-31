@@ -1511,6 +1511,17 @@ def compute_coverage(trimmed_sequence: str, expected_length: int) -> CoverageMet
     )
 
 
+def mask_n_as_gap(sequence: str) -> str:
+    """Replace N (case-insensitive) with '-' for the clustering FASTA only. tn93
+    excludes alignment gaps from every -a mode uniformly, but N is handled very
+    differently per mode (e.g. `average` can manufacture large distance purely
+    from a low-depth-masked block with zero real information — see
+    docs/threshold_rationale.md). Masking N as a gap here neutralizes it the
+    same way regardless of --ambiguities, while leaving real IUPAC ambiguity
+    codes (R, Y, etc.) untouched so their proportional treatment is preserved."""
+    return sequence.replace("N", "-").replace("n", "-")
+
+
 def select_max_usable_region(
     records: list[FastaRecord],
     reference_aligned: str,
@@ -1730,7 +1741,7 @@ def write_outputs(
         passed = metrics.coverage_fraction >= min_coverage
         reason = "" if passed else removal_reason
         if passed:
-            retained.append(FastaRecord(sample_id, trimmed))
+            retained.append(FastaRecord(sample_id, mask_n_as_gap(trimmed)))
         qc_rows.append(
             {
                 "sample_id": sample_id,

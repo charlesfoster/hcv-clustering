@@ -630,8 +630,8 @@ def add_tn93_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
     )
     parser.add_argument(
         "--ambiguities",
-        default="resolve",
-        help="TN93 ambiguity handling passed with -a: resolve, average, skip, gapmm, or an ambiguity list",
+        default="average",
+        help="TN93 ambiguity handling passed with -a: average, resolve, skip, gapmm, or an ambiguity list",
     )
     parser.add_argument("--ambiguity-fraction", type=float, help="TN93 maximum resolvable ambiguity fraction passed with -g")
     parser.add_argument("--min-overlap", type=int, help="Minimum pairwise overlap passed to TN93 with -l")
@@ -675,7 +675,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--keep-temp", action="store_true")
     parser.add_argument("--tn93", default="tn93")
     parser.add_argument("--tn93-threshold", type=float, help="TN93 reporting threshold; defaults to --threshold in all mode")
-    parser.add_argument("--ambiguities", default="resolve")
+    parser.add_argument("--ambiguities", default="average")
     parser.add_argument("--ambiguity-fraction", type=float)
     parser.add_argument("--min-overlap", type=int)
     parser.add_argument("--quiet", action="store_true", help="Pass -q to TN93")

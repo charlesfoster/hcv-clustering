@@ -184,15 +184,19 @@ def _run_tab() -> None:
             )
             ambiguities = st.selectbox(
                 "TN93 ambiguity handling",
-                ("resolve", "average", "skip", "gapmm"),
+                ("average", "resolve", "skip", "gapmm"),
                 index=0,
                 help=(
-                    "How the tn93 tool handles ambiguous bases (R, Y, N, etc.) when "
-                    "computing distance. resolve (default): pick the interpretation that "
-                    "minimizes distance. average: average over all possible resolutions. "
-                    "skip: exclude ambiguous positions from the comparison. gapmm: an "
-                    "alternative gap-aware handling mode — see the tn93 tool's own "
-                    "documentation for the full definition."
+                    "How tn93 handles real IUPAC ambiguity codes (R, Y, W, S, K, M) "
+                    "when computing distance. N is always masked to a gap before "
+                    "clustering regardless of this setting, so low-depth-masked "
+                    "positions can't distort distances (see "
+                    "docs/threshold_rationale.md). average (default): proportional "
+                    "treatment over the possible resolutions — e.g. R-A counts as "
+                    "0.5 A-A + 0.5 G-A. resolve: pick the interpretation that "
+                    "minimizes distance. skip: exclude ambiguous positions from the "
+                    "comparison. gapmm: an alternative gap-aware handling mode — see "
+                    "the tn93 tool's own documentation."
                 ),
             )
         with adv_col2:

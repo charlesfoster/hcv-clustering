@@ -52,6 +52,25 @@ Bartlett et al. 2017 uses TN93 directly, so this caveat applies only to the `cor
 
 ---
 
+## Ambiguity handling (`--ambiguities`, default `average`) and N-masking
+
+At any alignment position where either sequence carries an IUPAC ambiguity code (`N`, `R`, `Y`, etc.), `tn93` can `resolve` (pick whichever interpretation minimizes distance), `average` (spread the distance contribution proportionally over the possible resolutions), or `skip` (exclude the position from the comparison entirely). None of this is documented by the calibration papers — neither Bartlett et al. 2017 nor Lamoury et al. 2015 states which mode they used, so unlike the region/threshold choices above, there's no way to verify a match against the primary evidence. What follows is reasoned from first principles and verified empirically against this pipeline's own tooling, not matched to a citation.
+
+**`N` and real IUPAC ambiguity codes are not the same kind of thing, and conflating them is the actual problem.** `N` in a consensus FASTA typically means "insufficient read depth to call a base here" — missing data, carrying no information about the true nucleotide. A real 2-fold code like `R` (A or G) means "the reads disagree at this position" — often genuine within-host viral diversity (HCV, like HIV, has substantial intra-host quasispecies), a partially-informative signal constrained to 2 of 4 possible bases. `tn93`'s `resolve`/`average`/`skip` modes are global — none of them treat these two cases differently, confirmed against the tool's own documentation.
+
+**Two things this pipeline verified directly (via a local build of `tn93`, not just documentation) before deciding on a default:**
+
+1. **Alignment gaps (`-`) are excluded from the distance calculation regardless of `-a` mode.** A synthetic pair differing only by a 20nt gap block gave distance 0 under `resolve`, `average`, and `skip` alike (only `gapmm` changes this). Gaps are always effectively "skipped."
+2. **`average` can manufacture large, meaningless distance from a low-depth `N` block.** Two otherwise-100%-identical 100nt synthetic sequences, differing only by a 20nt `N` block in one of them, gave distance **0** under `resolve` and `skip`, but **0.168** under `average` — 16.8% "distance" invented entirely from positions carrying zero real information. Against a 0.03 threshold, that's a guaranteed false negative for what should be an exact match.
+
+**The fix: mask `N` to a gap before clustering, independent of `--ambiguities`.** Since gaps are already neutralized by `tn93` under every mode, converting `N`→`-` specifically for the clustering FASTA (`hcv_cluster_prep.mask_n_as_gap`, applied after QC coverage is computed so `n_bases`/`n_fraction` in `prep.qc.csv` stay accurate, but before writing `prep.clustering.fasta`) makes `N` behave like a gap under *any* `-a` mode — without touching real ambiguity codes (`R`, `Y`, etc.), which are left for `--ambiguities` to handle. `prep.aligned.fasta` (the full alignment) is untouched — masking only affects the sequence actually handed to `tn93`. Verified with a combined synthetic test (one sequence with both an `N`-block and a real `R` site): with masking, `average` gives distance ≈0.005 — matching almost exactly what the lone `R` site should contribute on its own — versus 0.142 without masking. The `N`-driven distortion is gone; the real ambiguity signal is preserved.
+
+**Why `average` (not `skip`) is the default now that `N` is neutralized separately**: within this pipeline's actual extracted `core-e2-nohvr1` region (post-QC, i.e. what `tn93` really sees — checked directly against a real run, not just the raw input), real 2-fold ambiguity codes outnumbered `N` roughly 9-to-1 (831 vs. 89 occurrences across a 111-sequence test run), and `N` was only ~0.04% of all bases. Coverage QC (`--min-coverage`) already filters out `N`-heavy sequences before they reach `tn93` — that's what it's for. So the ambiguity `tn93` actually processes is dominated by real within-host signal, not depth artifacts, and `average` (proportional, unbiased treatment) suits that better than `skip` (which would needlessly discard it) or `resolve` (which still has a one-directional bias toward smaller distances for the real ambiguity codes it does encounter, since it always picks the distance-minimizing interpretation, never the maximizing one).
+
+**Residual caveat**: `--min-coverage` (default 0.8) explicitly permits up to 20% missing data per sequence, and the low-coverage examples we found in a real run were gap-dominated rather than `N`-dominated — but consensus-calling conventions vary (this project's own raw, pre-extraction data shows `N` used for large-scale depth masking at sequence termini), so a future dataset could plausibly have `N`-heavy sequences passing QC. N-masking protects against exactly that case regardless of which `-a` mode is chosen, which is why it's applied unconditionally rather than left as an opt-in flag.
+
+---
+
 ## Region-to-threshold mapping
 
 ```python

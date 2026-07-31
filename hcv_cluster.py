@@ -493,8 +493,14 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--ambiguities",
         metavar="STR",
-        default="resolve",
-        help="TN93 ambiguity handling: resolve (default), average, skip, gapmm.",
+        default="average",
+        help=(
+            "TN93 ambiguity handling: average (default), resolve, skip, gapmm. "
+            "N is always masked to a gap before clustering regardless of this "
+            "setting (neutralizes low-depth-masked positions); average then "
+            "gives real IUPAC ambiguity codes (R, Y, etc.) proportional "
+            "treatment. See docs/threshold_rationale.md."
+        ),
     )
     run_parser.add_argument(
         "-r", "--region",

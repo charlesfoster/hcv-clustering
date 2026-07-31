@@ -242,6 +242,15 @@ def _run_tab() -> None:
             "Keep temporary MAFFT files",
             help="Keep MAFFT's intermediate alignment files after the run instead of deleting them — useful for debugging alignment issues.",
         )
+        reuse_alignments_from = st.text_input(
+            "Reuse alignments from results directory",
+            value="",
+            help=(
+                "Reuse unchanged samples from per-genotype prep.aligned.fasta files "
+                "under this previous results directory, and send only new or changed "
+                "samples to MAFFT. Leave blank to align every sample."
+            ),
+        )
         keep_paf = st.checkbox(
             "Keep raw minimap2 PAF file",
             help="Keep the raw minimap2 PAF alignment file from the genotyping step instead of deleting it — useful for debugging genotype assignment.",
@@ -297,6 +306,8 @@ def _run_tab() -> None:
                 argv.append("--force-download")
             if keep_temp:
                 argv.append("--keep-temp")
+            if reuse_alignments_from.strip():
+                argv.extend(["--reuse-alignments", reuse_alignments_from.strip()])
             if keep_paf:
                 argv.append("--keep-paf")
 

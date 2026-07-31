@@ -193,6 +193,16 @@ def command_run(args: argparse.Namespace) -> int:
                 "--genotype", genotype,
                 "--out-prefix", str(prefix),
             ]
+            if args.reuse_alignments:
+                cached_prefix = (
+                    args.reuse_alignments
+                    / "by_genotype"
+                    / hcv_workflow.safe_genotype_name(genotype)
+                    / "prep"
+                )
+                prep_cmd.extend(
+                    ["--cached-alignment", str(Path(f"{cached_prefix}.aligned.fasta"))]
+                )
             print(hcv_workflow.shell_join(prep_cmd))
             if args.distance in ("tn93", "both"):
                 tn93_csv = genotype_dir / "tn93.csv"
@@ -212,6 +222,11 @@ def command_run(args: argparse.Namespace) -> int:
                 snp_csv = genotype_dir / "snp.csv"
                 print(hcv_workflow.shell_join(["write_snp_csv", str(snp_csv), str(clustering_fasta)]))
         return 0
+
+    if args.reuse_alignments and not args.reuse_alignments.is_dir():
+        raise RuntimeError(
+            f"Alignment results directory does not exist: {args.reuse_alignments}"
+        )
 
     outdir.mkdir(parents=True, exist_ok=True)
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
@@ -300,6 +315,19 @@ def command_run(args: argparse.Namespace) -> int:
             prep_argv.extend(["--region", args.region])
         if args.keep_temp:
             prep_argv.append("--keep-temp")
+        if args.reuse_alignments:
+            cached_prefix = (
+                args.reuse_alignments
+                / "by_genotype"
+                / hcv_workflow.safe_genotype_name(genotype)
+                / "prep"
+            )
+            cached_alignment = Path(f"{cached_prefix}.aligned.fasta")
+            if cached_alignment.exists():
+                prep_argv.extend(["--cached-alignment", str(cached_alignment)])
+                print(f"--> Reusing unchanged sequences from: {cached_alignment}")
+            else:
+                print(f"--> No cached alignment for subtype {genotype}; aligning all sequences")
         with suppress():
             rc = hcv_cluster_prep.main(prep_argv)
         if rc:
@@ -662,6 +690,16 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--keep-temp",
         action="store_true",
         help=adv("Keep temporary MAFFT files"),
+    )
+    run_parser.add_argument(
+        "--reuse-alignments",
+        metavar="RESULTS_DIR",
+        type=Path,
+        default=None,
+        help=adv(
+            "Reuse unchanged sequences from per-genotype prep.aligned.fasta files "
+            "under a previous results directory; align only new or changed sequences"
+        ),
     )
     run_parser.add_argument(
         "--tn93",

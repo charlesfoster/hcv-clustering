@@ -50,6 +50,21 @@ pixi run hcv-cluster run -i samples.fasta
 
 Genotypes are detected automatically. The clustering threshold default is region-dependent (0.03 for `core-e2-nohvr1`, the default region; 0.045 for `core-e2` with HVR1 included; 0.015 for `ns5b`; 0.03 as a starting point for any other region — see [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence behind these values). Results are written to `results/` by default.
 
+For recurring runs against a growing input FASTA, write to a new output
+directory while reusing reference-anchored alignments from an earlier results
+directory:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta -o results_new \
+  --reuse-alignments results_previous
+```
+
+Unchanged sample IDs are read from each genotype's existing
+`results_previous/by_genotype/<genotype>/prep.aligned.fasta`; only new or
+changed sequences are sent to MAFFT. Region extraction and clustering outputs
+are rebuilt in `results_new` so the selected settings and new cluster
+connections are applied consistently.
+
 Common options:
 
 ```bash

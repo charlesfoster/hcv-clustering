@@ -1442,6 +1442,56 @@ def run_mafft_in_tempdir(
     return reference_aligned, query_alignment
 
 
+def reuse_cached_alignment(
+    records: list[FastaRecord],
+    cache_path: Path,
+    reference_fasta: Path,
+    reference_accession: str,
+    logger: logging.Logger,
+) -> tuple[str, dict[str, str], list[FastaRecord]]:
+    """Reuse unchanged records from a previous reference-anchored alignment."""
+    if not cache_path.exists():
+        raise HcvPrepError(f"Cached alignment does not exist: {cache_path}")
+    cached_records = read_fasta_records(cache_path)
+    reject_duplicate_ids(cached_records)
+    cached_by_header = {record.header: record.sequence for record in cached_records}
+
+    reference_aligned = cached_by_header.pop(reference_accession, None)
+    if reference_aligned is None:
+        raise HcvPrepError(
+            f"Cached alignment {cache_path} does not contain reference {reference_accession}"
+        )
+
+    reference_records = read_fasta_records(reference_fasta)
+    expected_reference = normalize_reference_sequence(reference_records[0].sequence)
+    if reference_aligned.replace("-", "").upper() != expected_reference:
+        raise HcvPrepError(
+            f"Cached alignment {cache_path} was not built with reference {reference_accession}"
+        )
+
+    alignment_length = len(reference_aligned)
+    if any(len(sequence) != alignment_length for sequence in cached_by_header.values()):
+        raise HcvPrepError(f"Cached alignment {cache_path} contains inconsistent sequence lengths")
+
+    reused: dict[str, str] = {}
+    to_align: list[FastaRecord] = []
+    for record in records:
+        cached = cached_by_header.get(record.header)
+        if cached is not None and cached.replace("-", "").upper() == record.sequence:
+            reused[record.header] = cached
+        else:
+            to_align.append(record)
+
+    logger.info(
+        "Reusing %s/%s unchanged sequences from %s; %s require alignment",
+        len(reused),
+        len(records),
+        cache_path,
+        len(to_align),
+    )
+    return reference_aligned, reused, to_align
+
+
 def reference_position_columns(reference_aligned: str) -> dict[int, int]:
     reference_position = 0
     columns: dict[int, int] = {}
@@ -1893,15 +1943,41 @@ def command_prep_align(args: argparse.Namespace) -> int:
         logger=logger,
     )
 
-    reference_aligned, query_alignment = run_mafft_addfragments(
-        records=normalized_records,
-        reference_fasta=bundle.fasta_path,
-        reference_accession=spec.accession,
-        mafft_command=args.mafft,
-        threads=args.threads,
-        keep_temp=args.keep_temp,
-        logger=logger,
-    )
+    cached_reference: str | None = None
+    query_alignment: dict[str, str] = {}
+    records_to_align = normalized_records
+    if args.cached_alignment:
+        cache_path = Path(args.cached_alignment)
+        cached_reference, query_alignment, records_to_align = reuse_cached_alignment(
+            records=normalized_records,
+            cache_path=cache_path,
+            reference_fasta=bundle.fasta_path,
+            reference_accession=spec.accession,
+            logger=logger,
+        )
+
+    if records_to_align:
+        reference_aligned, new_alignment = run_mafft_addfragments(
+            records=records_to_align,
+            reference_fasta=bundle.fasta_path,
+            reference_accession=spec.accession,
+            mafft_command=args.mafft,
+            threads=args.threads,
+            keep_temp=args.keep_temp,
+            logger=logger,
+        )
+        if cached_reference is not None and reference_aligned != cached_reference:
+            raise HcvPrepError("New and cached alignments use different reference coordinates")
+        query_alignment.update(new_alignment)
+    elif cached_reference is not None:
+        reference_aligned = cached_reference
+    else:  # pragma: no cover - read_fasta_records rejects an empty input earlier
+        raise HcvPrepError("No sequences were available to align")
+
+    query_alignment = {
+        record.header: query_alignment[record.header]
+        for record in normalized_records
+    }
     region_expression = args.region
     if region_expression is None:
         region_expression = "cds" if args.region_strategy == "max-usable" else "core-e2-nohvr1"
@@ -2042,6 +2118,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     align_parser.add_argument("--mafft", default="mafft", help="MAFFT executable path/name")
     align_parser.add_argument("--threads", type=int, default=1, help="MAFFT thread count")
+    align_parser.add_argument(
+        "--cached-alignment",
+        help=(
+            "Previous .aligned.fasta to reuse. Unchanged sample IDs are taken from the "
+            "cache; only new or changed sequences are sent to MAFFT."
+        ),
+    )
     align_parser.add_argument(
         "--genotype-validation",
         choices=("auto", "headers", "kmer", "none"),

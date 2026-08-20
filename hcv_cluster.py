@@ -24,28 +24,47 @@ import hcv_workflow
 # does not support a 1a/1b-vs-rest split, so a genotype split isn't defensible as
 # evidence-based.
 #
-# "core-e2-nohvr1" (the default region) matches Bartlett et al. 2017's Core-early-E2
-# TN93 pairwise/connected-components network directly (same metric, same clustering
-# algorithm as this pipeline) — the strongest available precedent. "core-e2" (HVR1
-# included) uses Lamoury et al. 2015's HVR1-inclusive Core-E2 value instead, since
-# masking and threshold are a coupled specification, not independently swappable.
-REGION_THRESHOLDS: dict[str, float] = {
+# TN93: "core-e2-nohvr1" (the default region) matches Bartlett et al. 2017's
+# Core-early-E2 TN93 pairwise/connected-components network directly (same metric,
+# same clustering algorithm as this pipeline) — the strongest available precedent.
+# "core-e2" (HVR1 included) and "ns5b" have no HVR1-inclusive/NS5B TN93 precedent,
+# so they reuse Lamoury et al. 2015's uncorrected-p-distance values as a (slightly
+# conservative, since TN93 >= p-distance for the same pair) approximation.
+REGION_THRESHOLDS_TN93: dict[str, float] = {
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
 }
-FALLBACK_THRESHOLD: float = REGION_THRESHOLDS["core-e2-nohvr1"]
+
+# SNP: this pipeline's SNP distance is uncorrected p-distance (fraction of
+# ACGT-comparable sites that differ) -- exactly the metric Lamoury et al. 2015 used
+# (MEGA v6 p-distance, partial deletion). Their region thresholds are therefore a
+# direct match, not an approximation, for all three regions below.
+REGION_THRESHOLDS_SNP: dict[str, float] = {
+    "core-e2-nohvr1": 0.03,
+    "core-e2": 0.045,
+    "ns5b": 0.015,
+}
+
+# Backward-compat aliases: TN93 was the only metric these names covered originally.
+REGION_THRESHOLDS: dict[str, float] = REGION_THRESHOLDS_TN93
+FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["core-e2-nohvr1"]
+FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["core-e2-nohvr1"]
 
 
-def resolve_threshold(region: str, user_threshold: float | None) -> float:
+def resolve_threshold(region: str, user_threshold: float | None, distance: str = "tn93") -> float:
     if user_threshold is not None:
         return user_threshold
     canonical_region = hcv_cluster_prep.expand_region_expression(region)
-    return REGION_THRESHOLDS.get(canonical_region, FALLBACK_THRESHOLD)
+    if distance == "snp":
+        return REGION_THRESHOLDS_SNP.get(canonical_region, FALLBACK_THRESHOLD_SNP)
+    return REGION_THRESHOLDS_TN93.get(canonical_region, FALLBACK_THRESHOLD)
 
 
-def region_threshold_is_evidence_based(region: str) -> bool:
-    return hcv_cluster_prep.expand_region_expression(region) in REGION_THRESHOLDS
+def region_threshold_is_evidence_based(region: str, distance: str = "tn93") -> bool:
+    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    table = REGION_THRESHOLDS_SNP if distance == "snp" else REGION_THRESHOLDS_TN93
+    return canonical_region in table
 
 
 def compute_snp_distances_detailed(
@@ -339,10 +358,10 @@ def command_run(args: argparse.Namespace) -> int:
             pct = f"{qc_st['passed'] / qc_st['total'] * 100:.0f}%" if qc_st["total"] else "n/a"
             print(f"--> {qc_st['total']} sequences, {qc_st['passed']} passed QC ({pct})")
 
-        threshold = resolve_threshold(args.region, args.threshold)
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
 
         if args.distance in ("tn93", "both"):
+            threshold = resolve_threshold(args.region, args.threshold, distance="tn93")
             tn93_csv = genotype_dir / "tn93.csv"
             links_csv = genotype_dir / "links.csv"
             clusters_csv = genotype_dir / "clusters.csv"
@@ -389,6 +408,7 @@ def command_run(args: argparse.Namespace) -> int:
             )
 
         if args.distance in ("snp", "both"):
+            snp_threshold = resolve_threshold(args.region, args.threshold, distance="snp")
             snp_csv = genotype_dir / "snp.csv"
             write_snp_csv(snp_csv, clustering_fasta)
             if args.distance == "snp":
@@ -400,7 +420,7 @@ def command_run(args: argparse.Namespace) -> int:
             link_args = argparse.Namespace(
                 distances=snp_csv,
                 output=snp_links_csv,
-                threshold=threshold,
+                threshold=snp_threshold,
                 include_self=False,
             )
             hcv_workflow.command_link(link_args)
@@ -419,7 +439,7 @@ def command_run(args: argparse.Namespace) -> int:
                 snp_link_tables.append((genotype, snp_links_csv))
             snp_st = _read_cluster_stats(snp_clusters_csv)
             print(
-                f"--> SNP   (threshold {threshold:.4g}): "
+                f"--> SNP   (threshold {snp_threshold:.4g}): "
                 f"{snp_st['n_multi']} cluster(s), {snp_st['singletons']} singleton(s), "
                 f"largest: {snp_st['largest']}"
             )

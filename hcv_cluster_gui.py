@@ -96,7 +96,9 @@ def _run_tab() -> None:
     with col1:
         distance = st.selectbox("Distance metric", ("tn93", "snp", "both"), index=0)
     with col2:
-        default_threshold = hcv_cluster.resolve_threshold(region, None)
+        default_threshold_tn93 = hcv_cluster.resolve_threshold(region, None, distance="tn93")
+        default_threshold_snp = hcv_cluster.resolve_threshold(region, None, distance="snp")
+        default_threshold = default_threshold_snp if distance == "snp" else default_threshold_tn93
         override_threshold = st.checkbox("Override default threshold")
         if override_threshold:
             threshold = st.number_input(
@@ -104,7 +106,14 @@ def _run_tab() -> None:
             )
         else:
             threshold = None
-            st.caption(f"Default for '{region}': **{default_threshold:.4g}**")
+            if distance == "both" and default_threshold_tn93 != default_threshold_snp:
+                st.caption(
+                    f"Default for '{region}': TN93 **{default_threshold_tn93:.4g}**, "
+                    f"SNP **{default_threshold_snp:.4g}**"
+                )
+            else:
+                metric_label = {"tn93": "TN93", "snp": "SNP", "both": "TN93 & SNP"}[distance]
+                st.caption(f"Default for '{region}' ({metric_label}): **{default_threshold:.4g}**")
     with col3:
         threads = st.number_input("MAFFT threads", min_value=1, value=1, step=1)
 

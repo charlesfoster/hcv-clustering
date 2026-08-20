@@ -8,10 +8,43 @@
 
 ## Defaults
 
-This pipeline offers two named Core-E2 variants, each paired with the threshold validated for it:
+This pipeline offers two named Core-E2 variants, each paired with the threshold validated for it. The same
+numeric defaults are used for both distance metrics this pipeline supports, but **for different reasons** —
+see "TN93 vs. SNP defaults" below before assuming that's a coincidence or an oversight.
 
-- **`core-e2-nohvr1` (default): TN93 ≤0.03**, HVR1 masked.
-- **`core-e2` (alternative): TN93 ≤0.045**, HVR1 included, unchanged/contiguous.
+- **`core-e2-nohvr1` (default): TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked.
+- **`core-e2` (alternative): TN93 ≤0.045 / SNP ≤0.045**, HVR1 included, unchanged/contiguous.
+- **`ns5b`: TN93 ≤0.015 / SNP ≤0.015**.
+
+---
+
+## TN93 vs. SNP defaults: same numbers, different evidentiary basis
+
+This pipeline's "SNP distance" (`hcv_cluster.compute_snp_distances_detailed`) is uncorrected p-distance —
+the fraction of ACGT-comparable aligned sites that differ. That is *exactly* the metric Lamoury et al. 2015
+used (MEGA v6 p-distance, partial deletion at 95% site coverage) — not an approximation of it.
+
+So the two `REGION_THRESHOLDS_*` tables in `hcv_cluster.py` are populated from the same literature values,
+but the citation is doing different work in each:
+
+| Region | TN93 default | Its real evidence | SNP default | Its real evidence |
+|---|---|---|---|---|
+| `core-e2-nohvr1` | 0.03 | **Bartlett et al. 2017**, TN93 directly — primary evidence | 0.03 | **Lamoury et al. 2015**, p-distance directly — primary evidence (and happens to numerically corroborate Bartlett) |
+| `core-e2` | 0.045 | Lamoury et al. 2015's p-distance value, reused as a TN93 approximation (no HVR1-inclusive TN93 precedent exists) | 0.045 | Lamoury et al. 2015, p-distance directly — primary evidence, no approximation needed |
+| `ns5b` | 0.015 | Lamoury et al. 2015's p-distance value, reused as a TN93 approximation | 0.015 | Lamoury et al. 2015, p-distance directly — primary evidence, no approximation needed |
+
+In other words: for `core-e2` and `ns5b`, the SNP default is the *more* directly evidenced of the two — TN93
+is the one borrowing a p-distance number as a stand-in. Only `core-e2-nohvr1` has independent direct evidence
+for both metrics (Bartlett for TN93, Lamoury for p-distance/SNP), which is also why it's the default region.
+
+One caveat: Lamoury et al. used MEGA's *partial deletion* (95% site-coverage cutoff across the whole
+alignment) for ambiguous/gap positions, whereas this pipeline's SNP distance uses *pairwise* deletion (only
+counting ACGT-comparable sites for each specific pair, independent of the rest of the alignment). This is a
+minor methodological difference in how missing data is handled, not in the core p-distance calculation
+itself, and does not undermine reusing their threshold values.
+
+`resolve_threshold(region, user_threshold, distance="tn93" | "snp")` in `hcv_cluster.py` looks up the
+metric-appropriate table; `--threshold` (CLI/GUI) still overrides either one explicitly, per run.
 
 ---
 
@@ -74,12 +107,21 @@ At any alignment position where either sequence carries an IUPAC ambiguity code 
 ## Region-to-threshold mapping
 
 ```python
-REGION_THRESHOLDS = {
+REGION_THRESHOLDS_TN93 = {
     "core-e2-nohvr1": 0.03,   # default region
     "core-e2": 0.045,         # HVR1 included, explicit alternative
     "ns5b": 0.015,
 }
+REGION_THRESHOLDS_SNP = {
+    "core-e2-nohvr1": 0.03,
+    "core-e2": 0.045,
+    "ns5b": 0.015,
+}
 ```
+
+Numerically identical tables today (see "TN93 vs. SNP defaults" above for why), kept as two separate tables
+rather than one shared dict so a future metric-specific revision doesn't require guessing which citation a
+shared number was actually anchored to.
 
 - **`core-e2-nohvr1` (default) → 0.03.** Bartlett et al. 2017: TN93, connected components, Australian 1a/3a-dominated cohort — the closest methodological match available.
 - **`core-e2` (alternative, HVR1 included) → 0.045.** Lamoury et al. 2015's HVR1-inclusive Core-E2 p-distance value; see the metric caveat above.

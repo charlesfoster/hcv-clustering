@@ -47,6 +47,30 @@ def test_region_threshold_is_evidence_based() -> None:
     assert hcv_cluster.region_threshold_is_evidence_based("cds") is False
 
 
+def test_resolve_threshold_snp_matches_lamoury_p_distance() -> None:
+    # This pipeline's SNP distance is uncorrected p-distance -- the same metric
+    # Lamoury et al. 2015 used, so their region values apply directly (not as an
+    # approximation the way they're reused for TN93's core-e2/ns5b defaults).
+    assert hcv_cluster.resolve_threshold("core-e2-nohvr1", None, distance="snp") == 0.03
+    assert hcv_cluster.resolve_threshold("core-e2", None, distance="snp") == 0.045
+    assert hcv_cluster.resolve_threshold("ns5b", None, distance="snp") == 0.015
+
+
+def test_resolve_threshold_snp_user_override_still_wins() -> None:
+    assert hcv_cluster.resolve_threshold("core-e2", 0.02, distance="snp") == 0.02
+
+
+def test_resolve_threshold_snp_unevidenced_region_returns_snp_fallback() -> None:
+    assert hcv_cluster.resolve_threshold(
+        "e1-e2", None, distance="snp"
+    ) == hcv_cluster.FALLBACK_THRESHOLD_SNP
+
+
+def test_region_threshold_is_evidence_based_snp() -> None:
+    assert hcv_cluster.region_threshold_is_evidence_based("core-e2-nohvr1", distance="snp") is True
+    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2", distance="snp") is False
+
+
 # ---------------------------------------------------------------------------
 # compute_snp_distances / compute_snp_distances_detailed
 # ---------------------------------------------------------------------------

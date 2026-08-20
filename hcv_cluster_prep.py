@@ -142,7 +142,87 @@ DEFAULT_REFERENCE_CATALOG = {
     "2a": ReferenceSpec("2a", "D00944.1"),
     "2b": ReferenceSpec("2b", "D10988.1"),
     "3a": ReferenceSpec("3a", "D17763.1"),
+    "4a": ReferenceSpec("4a", "DQ418789.1"),
+    "4d": ReferenceSpec("4d", "FJ462437.1"),
+    "5a": ReferenceSpec("5a", "AF064490.1"),
+    "6a": ReferenceSpec("6a", "AY859526.1"),
+    "1c": ReferenceSpec("1c", "AY051292.1"),
+    "1d": ReferenceSpec("1d", "KJ439768.1"),
+    "1e": ReferenceSpec("1e", "KC248194.1"),
+    "1g": ReferenceSpec("1g", "AM910652.2"),
+    "1h": ReferenceSpec("1h", "KC248198.1"),
+    "1i": ReferenceSpec("1i", "KJ439772.1"),
+    "1j": ReferenceSpec("1j", "KJ439773.1"),
+    "1k": ReferenceSpec("1k", "KJ439774.1"),
+    "1l": ReferenceSpec("1l", "KC248193.1"),
+    "1m": ReferenceSpec("1m", "KJ439778.1"),
+    "1n": ReferenceSpec("1n", "KJ439775.1"),
+    "1o": ReferenceSpec("1o", "KJ439779.1"),
+    "2c": ReferenceSpec("2c", "D50409.1"),
+    "2d": ReferenceSpec("2d", "JF735114.1"),
+    "2e": ReferenceSpec("2e", "JF735120.1"),
+    "2f": ReferenceSpec("2f", "KC844042.1"),
+    "2i": ReferenceSpec("2i", "DQ155561.1"),
+    "2j": ReferenceSpec("2j", "HM777359.1"),
+    "2k": ReferenceSpec("2k", "AB031663.1"),
+    "2m": ReferenceSpec("2m", "JF735111.1"),
+    "2q": ReferenceSpec("2q", "FN666428.2"),
+    "2r": ReferenceSpec("2r", "JF735115.1"),
+    "2t": ReferenceSpec("2t", "KC197238.1"),
+    "2u": ReferenceSpec("2u", "JF735112.1"),
+    "2v": ReferenceSpec("2v", "MW041297.1"),
+    "3b": ReferenceSpec("3b", "D49374.1"),
+    "3d": ReferenceSpec("3d", "KJ470619.1"),
+    "3e": ReferenceSpec("3e", "KJ470618.1"),
+    "3g": ReferenceSpec("3g", "JF735123.1"),
+    "3h": ReferenceSpec("3h", "JF735121.1"),
+    "3i": ReferenceSpec("3i", "FJ407092.1"),
+    "3k": ReferenceSpec("3k", "D63821.1"),
+    "4b": ReferenceSpec("4b", "FJ462435.1"),
+    "4c": ReferenceSpec("4c", "FJ462436.1"),
+    "4f": ReferenceSpec("4f", "EU392174.1"),
+    "4g": ReferenceSpec("4g", "FJ462432.1"),
+    "4k": ReferenceSpec("4k", "EU392171.1"),
+    "4l": ReferenceSpec("4l", "FJ839870.1"),
+    "4m": ReferenceSpec("4m", "FJ462433.1"),
+    "4n": ReferenceSpec("4n", "FJ462441.1"),
+    "4o": ReferenceSpec("4o", "FJ462440.1"),
+    "4p": ReferenceSpec("4p", "FJ462431.1"),
+    "4q": ReferenceSpec("4q", "FJ462434.1"),
+    "4r": ReferenceSpec("4r", "FJ462439.1"),
+    "4s": ReferenceSpec("4s", "JF735136.1"),
+    "4t": ReferenceSpec("4t", "FJ839869.1"),
+    "4v": ReferenceSpec("4v", "JX227959.1"),
+    "4w": ReferenceSpec("4w", "FJ025855.1"),
+    "6b": ReferenceSpec("6b", "D84262.2"),
+    "6c": ReferenceSpec("6c", "EF424629.1"),
+    "6d": ReferenceSpec("6d", "D84263.2"),
+    "6e": ReferenceSpec("6e", "DQ314805.1"),
+    "6f": ReferenceSpec("6f", "DQ835760.1"),
+    "6g": ReferenceSpec("6g", "D63822.1"),
+    "6h": ReferenceSpec("6h", "D84265.2"),
+    "6i": ReferenceSpec("6i", "DQ835762.1"),
+    "6j": ReferenceSpec("6j", "DQ835761.1"),
+    "6k": ReferenceSpec("6k", "D84264.2"),
+    "6l": ReferenceSpec("6l", "EF424628.1"),
+    "6m": ReferenceSpec("6m", "DQ835766.1"),
+    "6n": ReferenceSpec("6n", "DQ278894.1"),
+    "6o": ReferenceSpec("6o", "EF424627.1"),
+    "6p": ReferenceSpec("6p", "EF424626.1"),
+    "6q": ReferenceSpec("6q", "EF424625.1"),
+    "6r": ReferenceSpec("6r", "EU408328.1"),
+    "6s": ReferenceSpec("6s", "EU408329.1"),
+    "6t": ReferenceSpec("6t", "EF632071.1"),
+    "6u": ReferenceSpec("6u", "EU246940.1"),
+    "6v": ReferenceSpec("6v", "EU158186.1"),
+    "6w": ReferenceSpec("6w", "DQ278892.1"),
+    "7a": ReferenceSpec("7a", "EF108306.2"),
+    "7b": ReferenceSpec("7b", "KX092342.1"),
+    "8a": ReferenceSpec("8a", "MH590698.1"),
 }
+# ICTV (Jan 2026) lists 94 confirmed HCV subtypes across 8 genotypes. Not covered here:
+# 2l and 5b have no complete-genome/complete-CDS GenBank record at all (only short
+# partial-gene fragments), so no reference genome can be anchored for them.
 
 CANONICAL_REGION_ORDER = (
     "core",
@@ -894,6 +974,10 @@ def transfer_aa_bounds(
     except Exception:  # noqa: BLE001
         aligner.match_score = 1
         aligner.mismatch_score = -1
+
+    alphabet = set(getattr(aligner.substitution_matrix, "alphabet", "ACDEFGHIKLMNPQRSTVWY"))
+    target_aa = "".join(char if char in alphabet else "X" for char in target_aa)
+    template_aa = "".join(char if char in alphabet else "X" for char in template_aa)
 
     alignments = aligner.align(target_aa, template_aa)
     if len(alignments) == 0:
@@ -2062,7 +2146,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Align input sequences to a genotype reference and export region-trimmed QC outputs",
     )
     align_parser.add_argument("--input", required=True, help="Input multi-FASTA of unique HCV consensus IDs")
-    align_parser.add_argument("--genotype", required=True, help="Run genotype; built-ins: 1a, 1b, 2a, 2b, 3a")
+    align_parser.add_argument(
+        "--genotype", required=True, help="Run genotype; built-ins: 1a, 1b, 2a, 2b, 3a, 4a, 4d, 5a, 6a"
+    )
     align_parser.add_argument("--out-prefix", required=True, help="Prefix for .clustering.fasta, .qc.csv, .aligned.fasta, .log")
     align_parser.add_argument(
         "--region",

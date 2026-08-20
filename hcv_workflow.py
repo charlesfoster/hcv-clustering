@@ -510,6 +510,21 @@ def command_all(args: argparse.Namespace) -> int:
     if not genotypes:
         raise RuntimeError("No passing genotype assignments were available to process")
 
+    reference_catalog = hcv_cluster_prep.load_reference_catalog(
+        Path(args.reference_map) if args.reference_map else None
+    )
+    unsupported = [genotype for genotype in genotypes if genotype not in reference_catalog]
+    if unsupported:
+        print(
+            "WARNING: no reference genome configured for detected genotype(s) "
+            f"{', '.join(sorted(unsupported))}; skipping these sequences "
+            "(add a reference via --reference-map to include them)",
+            file=sys.stderr,
+        )
+        genotypes = [genotype for genotype in genotypes if genotype in reference_catalog]
+    if not genotypes:
+        raise RuntimeError("No passing genotype assignments have a configured reference genome")
+
     cluster_tables: list[tuple[str, Path]] = []
     for genotype in genotypes:
         safe_genotype = safe_genotype_name(genotype)

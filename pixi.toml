@@ -2,7 +2,7 @@
 authors = ["charlesfoster <charles.foster@unsw.edu.au>"]
 channels = ["conda-forge", "bioconda"]
 name = "clustering_workflow"
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
 version = "0.1.0"
 
 [tasks]

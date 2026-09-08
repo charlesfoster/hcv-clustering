@@ -20,6 +20,15 @@ brew install pixi
 
 Restart your terminal after installation, then verify with `pixi --version`.
 
+### Supported platforms
+
+Linux (x86-64 and arm64) and macOS (Apple silicon and Intel). The alignment,
+genotyping and distance tools (MAFFT, minimap2, TN93) have no native Windows
+builds in conda-forge or bioconda, so Windows is not supported directly — run
+the workflow under [WSL2](https://learn.microsoft.com/windows/wsl/install),
+where it resolves as ordinary Linux. The Streamlit GUI is reachable from a
+Windows browser at `localhost` when started inside WSL2.
+
 ## Setup
 
 Get the code:

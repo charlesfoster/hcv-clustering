@@ -22,11 +22,20 @@ Restart your terminal after installation, then verify with `pixi --version`.
 
 ## Setup
 
-Install all dependencies into an isolated environment:
+Get the code:
+
+```bash
+git clone https://github.com/charlesfoster/hcv-clustering.git
+cd hcv-clustering
+```
+
+Then install all dependencies into an isolated environment:
 
 ```bash
 pixi install
 ```
+
+Every command below is run from inside the `hcv-clustering` directory.
 
 ---
 

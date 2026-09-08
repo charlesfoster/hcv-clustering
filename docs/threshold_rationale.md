@@ -136,6 +136,36 @@ shared number was actually anchored to.
 
   If you have E1-only amplicon data, use `--threshold 0.039` with an E1-restricted `--region` (Rose et al. 2018) rather than this fallback, and keep the resulting clusters separate from any Core-E2 network — don't merge them.
 
+## SNP counts vs SNP p-distance
+
+The pipeline reports both. `snp_count` is the raw number of differing
+ACGT-comparable positions; `distance` is that count divided by
+`comparable_sites`. Thresholds default to the p-distance because that is the
+metric the evidence is expressed in — Lamoury et al. 2015 used MEGA v6
+uncorrected p-distance with partial deletion, which is exactly what this
+pipeline computes.
+
+`--snp-count-threshold N` links on the raw count instead. It exists because
+people describe pairs in whole SNPs, and a count is easier to reason about than
+0.014. It carries three caveats, and none of them are hypothetical:
+
+1. **Counts are not comparable across pairs.** `comparable_sites` varies with
+   each pair's N/gap content. Two pairs both "30 SNPs apart" are at 30/2157 and
+   30/900 — 1.4% vs 3.3% divergence — and a fixed count silently links the
+   poorer-quality pair at more than twice the true divergence.
+2. **No literature threshold is defined this way.** Every value in the table
+   above is a proportion. There is no published count-based HCV clustering
+   cutoff to anchor `N` to, so any `N` is a local convention, not evidence.
+3. **A count is region-length dependent.** 30 SNPs over the 2157 nt
+   `core-e2-nohvr1` window is not 30 SNPs over the 1773 nt `ns5b` window, so an
+   `N` chosen for one region does not transfer to another.
+
+Use it for communication and triage; use the p-distance default for anything
+reportable. The count is written to `snp.csv` and the SNP `links.csv` either
+way, so choosing the p-distance threshold costs you nothing in interpretability.
+
+---
+
 ## Why there's no genotype-specific threshold split
 
 A single threshold is used across genotypes, not a per-genotype split:

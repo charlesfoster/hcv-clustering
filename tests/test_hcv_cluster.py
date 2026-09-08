@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import hcv_cluster
 import hcv_workflow
 
@@ -239,3 +241,127 @@ def test_main_unknown_subcommand_returns_nonzero() -> None:
     with contextlib.suppress(SystemExit):
         rc = hcv_cluster.main(["unknown-subcommand"])
         assert rc != 0
+
+
+# ---------------------------------------------------------------------------
+# write_snp_links_csv / SNP counts
+# ---------------------------------------------------------------------------
+
+
+def _detailed(pairs):
+    """(source, target, snp_count, comparable_sites, distance) tuples."""
+    return [
+        (source, target, snp_count, sites, snp_count / sites)
+        for source, target, snp_count, sites in pairs
+    ]
+
+
+def test_write_snp_links_csv_carries_absolute_counts(tmp_path: Path) -> None:
+    out_csv = tmp_path / "snp_links.csv"
+
+    links = hcv_cluster.write_snp_links_csv(
+        out_csv, _detailed([("a", "b", 30, 2000)]), threshold=0.03
+    )
+
+    lines = out_csv.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "source,target,distance,snp_count,comparable_sites"
+    assert lines[1].startswith("a,b,0.015,30,2000")
+    assert links[0]["snp_count"] == 30
+
+
+def test_write_snp_links_csv_thresholds_on_p_distance_by_default(tmp_path: Path) -> None:
+    # Same 30 SNPs, but over few enough sites that p-distance exceeds the threshold.
+    links = hcv_cluster.write_snp_links_csv(
+        tmp_path / "l.csv",
+        _detailed([("a", "b", 30, 2000), ("c", "d", 30, 500)]),
+        threshold=0.03,
+    )
+
+    assert [(link["source"], link["target"]) for link in links] == [("a", "b")]
+
+
+def test_snp_count_threshold_links_on_raw_count(tmp_path: Path) -> None:
+    """The pair p-distance rejects is linked when the user asks for '<=30 SNPs'."""
+    links = hcv_cluster.write_snp_links_csv(
+        tmp_path / "l.csv",
+        _detailed([("a", "b", 30, 2000), ("c", "d", 30, 500), ("e", "f", 31, 5000)]),
+        threshold=0.03,
+        snp_count_threshold=30,
+    )
+
+    assert [(link["source"], link["target"]) for link in links] == [("a", "b"), ("c", "d")]
+
+
+def test_snp_count_threshold_of_zero_links_only_identical_pairs(tmp_path: Path) -> None:
+    links = hcv_cluster.write_snp_links_csv(
+        tmp_path / "l.csv",
+        _detailed([("a", "b", 0, 2000), ("c", "d", 1, 2000)]),
+        threshold=0.03,
+        snp_count_threshold=0,
+    )
+
+    assert [(link["source"], link["target"]) for link in links] == [("a", "b")]
+
+
+def test_negative_snp_count_threshold_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        hcv_cluster.write_snp_links_csv(
+            tmp_path / "l.csv", _detailed([("a", "b", 1, 100)]), threshold=0.03,
+            snp_count_threshold=-1,
+        )
+
+
+def test_snp_links_are_parseable_for_clustering(tmp_path: Path) -> None:
+    out_csv = tmp_path / "snp_links.csv"
+    hcv_cluster.write_snp_links_csv(
+        out_csv, _detailed([("a", "b", 3, 1000)]), threshold=0.03
+    )
+
+    parsed = hcv_workflow.parse_links(out_csv)
+
+    assert [(link.source, link.target) for link in parsed] == [("a", "b")]
+
+
+def test_snp_count_summary_reports_range_and_median() -> None:
+    summary = hcv_cluster._snp_count_summary(
+        [
+            {"snp_count": 5, "comparable_sites": 2000},
+            {"snp_count": 30, "comparable_sites": 2100},
+            {"snp_count": 12, "comparable_sites": 1900},
+        ]
+    )
+
+    assert "5-30 SNPs" in summary
+    assert "median 12" in summary
+    assert "1900-2100 comparable sites" in summary
+
+
+def test_snp_count_summary_handles_no_links() -> None:
+    assert hcv_cluster._snp_count_summary([]) == "no linked pairs"
+
+
+def test_merge_link_tables_preserves_snp_columns(tmp_path: Path) -> None:
+    first = tmp_path / "gt1.csv"
+    second = tmp_path / "gt2.csv"
+    hcv_cluster.write_snp_links_csv(first, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
+    hcv_cluster.write_snp_links_csv(second, _detailed([("c", "d", 7, 1200)]), threshold=0.03)
+    merged = tmp_path / "merged.csv"
+
+    hcv_workflow.merge_link_tables([("1a", first), ("1b", second)], merged)
+
+    lines = merged.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "source,target,distance,snp_count,comparable_sites"
+    assert lines[1].endswith(",3,1000")
+    assert lines[2].endswith(",7,1200")
+
+
+def test_merge_link_tables_drops_snp_columns_when_not_in_every_input(tmp_path: Path) -> None:
+    with_counts = tmp_path / "snp.csv"
+    hcv_cluster.write_snp_links_csv(with_counts, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
+    without_counts = tmp_path / "tn93.csv"
+    hcv_workflow.write_links(without_counts, [hcv_workflow.LinkRow("c", "d", 0.01)])
+    merged = tmp_path / "merged.csv"
+
+    hcv_workflow.merge_link_tables([("1a", with_counts), ("1b", without_counts)], merged)
+
+    assert merged.read_text(encoding="utf-8").splitlines()[0] == "source,target,distance"

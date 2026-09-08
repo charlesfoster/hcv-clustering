@@ -99,8 +99,13 @@ def compute_snp_distances(fasta_path: Path) -> list[hcv_workflow.DistanceRow]:
     ]
 
 
-def write_snp_csv(path: Path, fasta_path: Path) -> list[hcv_workflow.DistanceRow]:
-    detailed = compute_snp_distances_detailed(fasta_path)
+def write_snp_csv(
+    path: Path,
+    fasta_path: Path,
+    detailed: list[tuple[str, str, int, int, float]] | None = None,
+) -> list[hcv_workflow.DistanceRow]:
+    if detailed is None:
+        detailed = compute_snp_distances_detailed(fasta_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
@@ -122,6 +127,64 @@ def write_snp_csv(path: Path, fasta_path: Path) -> list[hcv_workflow.DistanceRow
         hcv_workflow.DistanceRow(id_i, id_j, normalized)
         for id_i, id_j, _snp_count, _comparable_sites, normalized in detailed
     ]
+
+
+def write_snp_links_csv(
+    path: Path,
+    detailed: list[tuple[str, str, int, int, float]],
+    threshold: float,
+    snp_count_threshold: int | None = None,
+) -> list[dict[str, str | int | float]]:
+    """Write SNP links, carrying the absolute SNP count alongside the p-distance.
+
+    With snp_count_threshold set, pairs are linked on the raw number of differing
+    sites ("within 30 SNPs") instead of on p-distance. The count is always written
+    either way, so a link can be described in SNPs even when p-distance defined it.
+    """
+    if snp_count_threshold is not None and snp_count_threshold < 0:
+        raise ValueError("--snp-count-threshold must be non-negative")
+
+    links: list[dict[str, str | int | float]] = []
+    for source, target, snp_count, comparable_sites, distance in detailed:
+        if source == target:
+            continue
+        if snp_count_threshold is not None:
+            linked = snp_count <= snp_count_threshold
+        else:
+            linked = distance <= threshold
+        if linked:
+            links.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "distance": distance,
+                    "snp_count": snp_count,
+                    "comparable_sites": comparable_sites,
+                }
+            )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        csv_writer = csv.DictWriter(
+            handle, fieldnames=("source", "target", "distance", "snp_count", "comparable_sites")
+        )
+        csv_writer.writeheader()
+        for link in links:
+            csv_writer.writerow({**link, "distance": f"{float(link['distance']):.10g}"})
+    return links
+
+
+def _snp_count_summary(links: list[dict[str, str | int | float]]) -> str:
+    """Describe linked pairs in whole SNPs, which is how people talk about them."""
+    if not links:
+        return "no linked pairs"
+    counts = sorted(int(link["snp_count"]) for link in links)
+    sites = sorted(int(link["comparable_sites"]) for link in links)
+    middle = counts[len(counts) // 2]
+    return (
+        f"linked pairs differ by {counts[0]}-{counts[-1]} SNPs (median {middle}) "
+        f"over {sites[0]}-{sites[-1]} comparable sites"
+    )
 
 
 @contextlib.contextmanager
@@ -219,9 +282,11 @@ def command_run(args: argparse.Namespace) -> int:
                     / hcv_workflow.safe_genotype_name(genotype)
                     / "prep"
                 )
-                prep_cmd.extend(
-                    ["--cached-alignment", str(Path(f"{cached_prefix}.aligned.fasta"))]
-                )
+                cached_alignment = Path(f"{cached_prefix}.aligned.fasta")
+                # Only print a flag that would actually work; the real run applies the
+                # same existence check, and prep-align errors on a missing cache file.
+                if cached_alignment.exists():
+                    prep_cmd.extend(["--cached-alignment", str(cached_alignment)])
             print(hcv_workflow.shell_join(prep_cmd))
             if args.distance in ("tn93", "both"):
                 tn93_csv = genotype_dir / "tn93.csv"
@@ -282,12 +347,39 @@ def command_run(args: argparse.Namespace) -> int:
     if not genotypes:
         raise RuntimeError("No passing genotype assignments were available to process")
 
+    # A detected subtype with no configured reference must not abort the whole run and
+    # discard every other subtype's results; skip it with a warning, as hcv_workflow does.
+    reference_catalog = hcv_cluster_prep.load_reference_catalog(args.reference_map)
+    unsupported = [genotype for genotype in genotypes if genotype not in reference_catalog]
+    if unsupported:
+        unsupported_counts = {
+            gt: sum(1 for r in genotype_rows if r.get("assigned_genotype") == gt)
+            for gt in unsupported
+        }
+        detail = ", ".join(f"{gt} ({unsupported_counts[gt]})" for gt in sorted(unsupported))
+        print(
+            f"WARNING: no reference genome configured for subtype(s) {detail}; "
+            "these sequences are skipped. Supply one with --reference-map to include them.",
+            file=sys.stderr,
+        )
+        genotypes = [genotype for genotype in genotypes if genotype in reference_catalog]
+    if not genotypes:
+        raise RuntimeError("No passing genotype assignments have a configured reference genome")
+
     gt_counts = {
         gt: sum(1 for r in genotype_rows if r.get("assigned_genotype") == gt)
         for gt in genotypes
     }
     gt_summary = ", ".join(f"{gt} ({gt_counts[gt]})" for gt in genotypes)
     print(f"--> {len(genotypes)} subtype(s) found: {gt_summary}")
+    if args.snp_count_threshold is not None:
+        print(
+            f"WARNING: --snp-count-threshold {args.snp_count_threshold} links on raw SNP "
+            "count. Pairs are compared over differing numbers of sites (N/gap positions "
+            "are skipped), so the same count means different divergence for different "
+            "pairs, and no HCV clustering threshold in the literature is defined this "
+            "way. Prefer the p-distance default for anything reportable."
+        )
     if args.threshold is None and not region_threshold_is_evidence_based(args.region):
         print(
             f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
@@ -344,7 +436,13 @@ def command_run(args: argparse.Namespace) -> int:
             cached_alignment = Path(f"{cached_prefix}.aligned.fasta")
             if cached_alignment.exists():
                 prep_argv.extend(["--cached-alignment", str(cached_alignment)])
-                print(f"--> Reusing unchanged sequences from: {cached_alignment}")
+                reusable, total = hcv_cluster_prep.count_reusable_sequences(
+                    genotype_fasta, cached_alignment
+                )
+                print(
+                    f"--> Reusing {reusable}/{total} cached alignments from "
+                    f"{cached_alignment}; {total - reusable} to align"
+                )
             else:
                 print(f"--> No cached alignment for subtype {genotype}; aligning all sequences")
         with suppress():
@@ -410,20 +508,20 @@ def command_run(args: argparse.Namespace) -> int:
         if args.distance in ("snp", "both"):
             snp_threshold = resolve_threshold(args.region, args.threshold, distance="snp")
             snp_csv = genotype_dir / "snp.csv"
-            write_snp_csv(snp_csv, clustering_fasta)
+            snp_detailed = compute_snp_distances_detailed(clustering_fasta)
+            write_snp_csv(snp_csv, clustering_fasta, snp_detailed)
             if args.distance == "snp":
                 snp_links_csv = genotype_dir / "links.csv"
                 snp_clusters_csv = genotype_dir / "clusters.csv"
             else:
                 snp_links_csv = genotype_dir / "snp_links.csv"
                 snp_clusters_csv = genotype_dir / "snp_clusters.csv"
-            link_args = argparse.Namespace(
-                distances=snp_csv,
-                output=snp_links_csv,
+            snp_links = write_snp_links_csv(
+                snp_links_csv,
+                snp_detailed,
                 threshold=snp_threshold,
-                include_self=False,
+                snp_count_threshold=args.snp_count_threshold,
             )
-            hcv_workflow.command_link(link_args)
             cluster_args = argparse.Namespace(
                 links=snp_links_csv,
                 output=snp_clusters_csv,
@@ -438,11 +536,16 @@ def command_run(args: argparse.Namespace) -> int:
                 snp_cluster_tables.append((genotype, snp_clusters_csv))
                 snp_link_tables.append((genotype, snp_links_csv))
             snp_st = _read_cluster_stats(snp_clusters_csv)
+            if args.snp_count_threshold is not None:
+                snp_threshold_label = f"<={args.snp_count_threshold} SNPs"
+            else:
+                snp_threshold_label = f"threshold {snp_threshold:.4g}"
             print(
-                f"--> SNP   (threshold {snp_threshold:.4g}): "
+                f"--> SNP   ({snp_threshold_label}): "
                 f"{snp_st['n_multi']} cluster(s), {snp_st['singletons']} singleton(s), "
                 f"largest: {snp_st['largest']}"
             )
+            print(f"          {_snp_count_summary(snp_links)}")
             snp_file_prefix = "" if args.distance == "snp" else "snp_"
             _render_cluster_plot(
                 args.plot_network,
@@ -710,6 +813,17 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--keep-temp",
         action="store_true",
         help=adv("Keep temporary MAFFT files"),
+    )
+    run_parser.add_argument(
+        "--snp-count-threshold",
+        metavar="N",
+        type=int,
+        default=None,
+        help=(
+            "Link SNP pairs on absolute differing-site count (e.g. 30) instead of "
+            "p-distance. The count is reported either way; see docs/threshold_rationale.md "
+            "for why an absolute count is not comparable across pairs"
+        ),
     )
     run_parser.add_argument(
         "--reuse-alignments",

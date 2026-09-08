@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -145,6 +146,7 @@ DEFAULT_REFERENCE_CATALOG = {
     "4a": ReferenceSpec("4a", "DQ418789.1"),
     "4d": ReferenceSpec("4d", "FJ462437.1"),
     "5a": ReferenceSpec("5a", "AF064490.1"),
+    "5b": ReferenceSpec("5b", "PQ899568.1"),
     "6a": ReferenceSpec("6a", "AY859526.1"),
     "1c": ReferenceSpec("1c", "AY051292.1"),
     "1d": ReferenceSpec("1d", "KJ439768.1"),
@@ -165,12 +167,13 @@ DEFAULT_REFERENCE_CATALOG = {
     "2i": ReferenceSpec("2i", "DQ155561.1"),
     "2j": ReferenceSpec("2j", "HM777359.1"),
     "2k": ReferenceSpec("2k", "AB031663.1"),
+    "2l": ReferenceSpec("2l", "KC197235.1"),
     "2m": ReferenceSpec("2m", "JF735111.1"),
     "2q": ReferenceSpec("2q", "FN666428.2"),
     "2r": ReferenceSpec("2r", "JF735115.1"),
     "2t": ReferenceSpec("2t", "KC197238.1"),
     "2u": ReferenceSpec("2u", "JF735112.1"),
-    "2v": ReferenceSpec("2v", "MW041297.1"),
+    "2v": ReferenceSpec("2v", "MW041295.1"),
     "3b": ReferenceSpec("3b", "D49374.1"),
     "3d": ReferenceSpec("3d", "KJ470619.1"),
     "3e": ReferenceSpec("3e", "KJ470618.1"),
@@ -220,9 +223,20 @@ DEFAULT_REFERENCE_CATALOG = {
     "7b": ReferenceSpec("7b", "KX092342.1"),
     "8a": ReferenceSpec("8a", "MH590698.1"),
 }
-# ICTV (Jan 2026) lists 94 confirmed HCV subtypes across 8 genotypes. Not covered here:
-# 2l and 5b have no complete-genome/complete-CDS GenBank record at all (only short
-# partial-gene fragments), so no reference genome can be anchored for them.
+# ICTV lists 94 confirmed HCV subtypes across 8 genotypes (see
+# reference_data/ictv_hcv_subtypes.tsv, mirrored from ICTV Flaviviridae/Hepacivirus
+# Table 1). The 84 covered here are validated by tests/test_reference_catalog.py.
+#
+# The 10 not covered are 6xa-6xj. ICTV lists exemplar accessions for all of them, but
+# they are recent provisional-style designations that the bundled genotyping panel does
+# not call, so adding them would create references nothing can be assigned to. Any
+# detected-but-uncatalogued subtype is skipped with a warning rather than aborting a
+# run, and a reference can be supplied at any time via --reference-map.
+#
+# Where an accession below differs from ICTV's first-listed exemplar, it is a different
+# genome of the *same* ICTV-confirmed subtype, chosen for complete-CDS annotation that
+# resolves core-E2 boundaries cleanly. tests/test_reference_catalog.py pins those
+# deviations so a silent drift cannot creep in.
 
 CANONICAL_REGION_ORDER = (
     "core",
@@ -1526,6 +1540,91 @@ def run_mafft_in_tempdir(
     return reference_aligned, query_alignment
 
 
+ALIGNMENT_CACHE_VERSION = 1
+
+
+def alignment_cache_metadata_path(alignment_path: Path) -> Path:
+    """Sidecar path holding input fingerprints for a written alignment."""
+    return alignment_path.with_suffix(alignment_path.suffix + ".meta.json")
+
+
+def sequence_fingerprint(sequence: str) -> str:
+    return hashlib.sha256(sequence.encode("ascii")).hexdigest()
+
+
+def write_alignment_cache_metadata(
+    alignment_path: Path,
+    records: list[FastaRecord],
+    reference_accession: str,
+    reference_ungapped: str,
+    alignment_length: int,
+) -> None:
+    """Record the *input* fingerprint of every aligned sample.
+
+    MAFFT runs with --keeplength, which discards insertions relative to the
+    reference, so an aligned row cannot be degapped back into the input it came
+    from. Fingerprinting the normalized input here is what makes a later
+    --cached-alignment run able to recognize an unchanged sample.
+    """
+    payload = {
+        "version": ALIGNMENT_CACHE_VERSION,
+        "reference_accession": reference_accession,
+        "reference_fingerprint": sequence_fingerprint(reference_ungapped),
+        "alignment_length": alignment_length,
+        "sequences": {record.header: sequence_fingerprint(record.sequence) for record in records},
+    }
+    path = alignment_cache_metadata_path(alignment_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def read_alignment_cache_metadata(alignment_path: Path) -> dict[str, Any] | None:
+    path = alignment_cache_metadata_path(alignment_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise HcvPrepError(f"Cached alignment metadata {path} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("sequences"), dict):
+        raise HcvPrepError(f"Cached alignment metadata {path} is malformed")
+    if payload.get("version") != ALIGNMENT_CACHE_VERSION:
+        raise HcvPrepError(
+            f"Cached alignment metadata {path} has unsupported version "
+            f"{payload.get('version')!r}; expected {ALIGNMENT_CACHE_VERSION}"
+        )
+    return payload
+
+
+def count_reusable_sequences(input_fasta: Path, cache_path: Path) -> tuple[int, int]:
+    """(reusable, total) for an input against a cached alignment, without aligning.
+
+    Lets the caller report cache effectiveness up front. A cache that silently reuses
+    nothing looks identical to a working one otherwise.
+    """
+    records = read_fasta_records(input_fasta)
+    total = len(records)
+    if not cache_path.exists():
+        return 0, total
+    try:
+        metadata = read_alignment_cache_metadata(cache_path)
+    except HcvPrepError:
+        return 0, total
+    if metadata is None:
+        return 0, total
+
+    fingerprints = metadata["sequences"]
+    quiet = logging.getLogger("hcv_cluster_prep.count_reusable")
+    quiet.addHandler(logging.NullHandler())
+    quiet.propagate = False
+    reusable = 0
+    for record in records:
+        normalized = normalize_input_record(record, quiet)
+        if fingerprints.get(normalized.header) == sequence_fingerprint(normalized.sequence):
+            reusable += 1
+    return reusable, total
+
+
 def reuse_cached_alignment(
     records: list[FastaRecord],
     cache_path: Path,
@@ -1557,11 +1656,38 @@ def reuse_cached_alignment(
     if any(len(sequence) != alignment_length for sequence in cached_by_header.values()):
         raise HcvPrepError(f"Cached alignment {cache_path} contains inconsistent sequence lengths")
 
+    metadata = read_alignment_cache_metadata(cache_path)
+    if metadata is None:
+        logger.warning(
+            "Cached alignment %s has no %s sidecar, so unchanged samples cannot be "
+            "identified; realigning every sequence",
+            cache_path,
+            alignment_cache_metadata_path(cache_path).name,
+        )
+        return reference_aligned, {}, list(records)
+
+    if metadata["reference_fingerprint"] != sequence_fingerprint(expected_reference):
+        raise HcvPrepError(
+            f"Cached alignment metadata for {cache_path} was built against a different "
+            f"reference sequence than {reference_accession}"
+        )
+    if metadata.get("alignment_length") != alignment_length:
+        raise HcvPrepError(
+            f"Cached alignment {cache_path} is {alignment_length} columns wide but its "
+            f"metadata records {metadata.get('alignment_length')}"
+        )
+
+    fingerprints: dict[str, str] = metadata["sequences"]
     reused: dict[str, str] = {}
     to_align: list[FastaRecord] = []
     for record in records:
         cached = cached_by_header.get(record.header)
-        if cached is not None and cached.replace("-", "").upper() == record.sequence:
+        expected = fingerprints.get(record.header)
+        if (
+            cached is not None
+            and expected is not None
+            and expected == sequence_fingerprint(record.sequence)
+        ):
             reused[record.header] = cached
         else:
             to_align.append(record)
@@ -1908,10 +2034,20 @@ def write_outputs(
     aligned_records = [FastaRecord(spec.accession, reference_aligned)]
     aligned_records.extend(FastaRecord(record.header, query_alignment[record.header]) for record in records)
     write_fasta_records(aligned_records, aligned_path)
+    write_alignment_cache_metadata(
+        alignment_path=aligned_path,
+        records=records,
+        reference_accession=spec.accession,
+        reference_ungapped=reference_aligned.replace("-", "").upper(),
+        alignment_length=len(reference_aligned),
+    )
 
     logger.info("Wrote clustering FASTA: %s (%s/%s retained)", clustering_path, len(retained), len(records))
     logger.info("Wrote QC CSV: %s", qc_path)
     logger.info("Wrote full reference-anchored alignment: %s", aligned_path)
+    logger.info(
+        "Wrote alignment reuse metadata: %s", alignment_cache_metadata_path(aligned_path)
+    )
     if not retained:
         logger.warning("No sequences passed the %.3f selected-region coverage threshold", min_coverage)
 
@@ -2147,7 +2283,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     align_parser.add_argument("--input", required=True, help="Input multi-FASTA of unique HCV consensus IDs")
     align_parser.add_argument(
-        "--genotype", required=True, help="Run genotype; built-ins: 1a, 1b, 2a, 2b, 3a, 4a, 4d, 5a, 6a"
+        "--genotype",
+        required=True,
+        help=(
+            "Run genotype/subtype. 84 of ICTV's 94 confirmed subtypes have a built-in "
+            "reference; use --reference-map to supply others"
+        ),
     )
     align_parser.add_argument("--out-prefix", required=True, help="Prefix for .clustering.fasta, .qc.csv, .aligned.fasta, .log")
     align_parser.add_argument(

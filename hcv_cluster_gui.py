@@ -117,6 +117,26 @@ def _run_tab() -> None:
     with col3:
         threads = st.number_input("MAFFT threads", min_value=1, value=1, step=1)
 
+    snp_count_threshold = None
+    if distance in ("snp", "both"):
+        use_snp_count = st.checkbox(
+            "Link SNP pairs by SNP count instead of p-distance",
+            help=(
+                "Cluster on the raw number of differing bases (e.g. \"within 30 SNPs\") "
+                "rather than the proportion. The SNP count is reported either way."
+            ),
+        )
+        if use_snp_count:
+            snp_count_threshold = int(
+                st.number_input("Maximum SNPs between linked samples", min_value=0, value=30, step=1)
+            )
+            st.warning(
+                "Pairs are compared over differing numbers of sites (N and gap positions "
+                "are skipped), so the same SNP count means different divergence for "
+                "different pairs, and no HCV clustering threshold in the literature is "
+                "defined this way. Prefer the p-distance default for anything reportable."
+            )
+
     verbose = st.checkbox("Verbose logging")
     dry_run = st.checkbox("Dry run (preview commands only, no execution)")
 
@@ -317,6 +337,8 @@ def _run_tab() -> None:
                 argv.append("--keep-temp")
             if reuse_alignments_from.strip():
                 argv.extend(["--reuse-alignments", reuse_alignments_from.strip()])
+            if snp_count_threshold is not None:
+                argv.extend(["--snp-count-threshold", str(snp_count_threshold)])
             if keep_paf:
                 argv.append("--keep-paf")
 

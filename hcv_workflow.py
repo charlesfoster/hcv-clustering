@@ -300,19 +300,32 @@ def merge_cluster_tables(inputs: Iterable[tuple[str, Path]], output: Path) -> No
         writer.writerows(sorted(rows, key=lambda row: (str(row["genotype"]), str(row["sample_id"]))))
 
 
+# Optional per-link columns preserved when every input table carries them, so a merged
+# SNP link table can still report "these two differ by 30 SNPs".
+OPTIONAL_LINK_FIELDS = ("snp_count", "comparable_sites")
+
+
 def merge_link_tables(inputs: Iterable[tuple[str, Path]], output: Path) -> None:
     rows: list[dict[str, str]] = []
+    extra_fields: tuple[str, ...] | None = None
     for _genotype, path in inputs:
         with path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
+            present = tuple(f for f in OPTIONAL_LINK_FIELDS if f in (reader.fieldnames or []))
+            # Keep only the optional columns common to every input table.
+            extra_fields = present if extra_fields is None else tuple(
+                f for f in extra_fields if f in present
+            )
             for row in reader:
-                rows.append({"source": row["source"], "target": row["target"], "distance": row["distance"]})
+                rows.append(row)
 
+    fieldnames = ("source", "target", "distance", *(extra_fields or ()))
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=("source", "target", "distance"))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
 
 
 def run_tn93(args: argparse.Namespace) -> int:

@@ -59,11 +59,46 @@ pixi run hcv-cluster run -i samples.fasta -o results_new \
   --reuse-alignments results_previous
 ```
 
-Unchanged sample IDs are read from each genotype's existing
+Unchanged samples are read from each genotype's existing
 `results_previous/by_genotype/<genotype>/prep.aligned.fasta`; only new or
 changed sequences are sent to MAFFT. Region extraction and clustering outputs
 are rebuilt in `results_new` so the selected settings and new cluster
 connections are applied consistently.
+
+A sample counts as unchanged when its input sequence matches the fingerprint
+recorded in the sidecar `prep.aligned.fasta.meta.json` written alongside each
+alignment. The run reports what the cache achieved, so a cache that is not
+helping is visible rather than silent:
+
+```
+--> Reusing 812/840 cached alignments from results_previous/...; 28 to align
+```
+
+An alignment produced before the sidecar existed cannot be matched against, and
+every sequence is realigned (with a warning). Re-run once to write one.
+
+### Reporting differences as whole SNPs
+
+Every SNP-distance run reports the absolute number of differing bases alongside
+the p-distance. `snp.csv` and the SNP `links.csv` both carry `snp_count` and
+`comparable_sites`, and each subtype prints a plain-English summary:
+
+```
+--> SNP   (threshold 0.03): 4 cluster(s), 11 singleton(s), largest: 6
+          linked pairs differ by 0-62 SNPs (median 9) over 2098-2157 comparable sites
+```
+
+To cluster on that number directly — "link anything within 30 SNPs" — use:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta --distance snp --snp-count-threshold 30
+```
+
+This is offered because people reason in whole SNPs, but it is **not** the
+default and is not evidence-based. `comparable_sites` differs between pairs
+(N and gap positions are skipped), so the same count means different divergence
+for different pairs, and no HCV clustering threshold in the literature is
+defined this way. See [`docs/threshold_rationale.md`](docs/threshold_rationale.md).
 
 Common options:
 
@@ -182,9 +217,10 @@ results/
     1a/
       prep.clustering.fasta             aligned, region-trimmed sequences (input to distance step)
       prep.aligned.fasta                full reference-anchored alignment including reference
+      prep.aligned.fasta.meta.json      input fingerprints enabling --reuse-alignments
       prep.qc.csv                       per-sequence QC metrics (coverage, N-fraction, pass/fail)
       tn93.csv                          pairwise TN93 distances (if --distance tn93 or both)
-      snp.csv                           pairwise SNP distances (if --distance snp or both)
+      snp.csv                           pairwise SNP distances + snp_count (if --distance snp or both)
       links.csv                         pairs within threshold (primary metric)
       clusters.csv                      cluster membership for this genotype
       snp_links.csv                     SNP-based pairs (if --distance both)
@@ -194,7 +230,7 @@ results/
   clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs
   clusters.snp.csv                      merged SNP clusters (if --distance both)
   links.csv                             merged edge list, all genotypes (source, target, distance)
-  links.snp.csv                         merged SNP edge list (if --distance both)
+  links.snp.csv                         merged SNP edge list, with snp_count (if --distance both)
 ```
 
 Cluster IDs in `clusters.csv` are genotype-qualified (e.g. `1a_C0001`, `3a_C0001`) so per-genotype component numbers remain unique after merging. `links.csv` is a plain concatenation of every genotype's edges — sample IDs already match `clusters.csv` directly, since distances are never computed across genotypes (see below), so there's nothing to merge conflict on.

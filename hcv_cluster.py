@@ -237,6 +237,8 @@ def _requested_plot_fields(args: argparse.Namespace) -> tuple[str, ...]:
                 args.plot_symbol_by,
                 args.plot_size_by,
                 args.plot_outline_by,
+                args.plot_center_by,
+                *(args.plot_small_multiple_field or ()),
                 *(args.plot_hover_field or ()),
             )
             if field
@@ -262,6 +264,20 @@ def _validate_plot_fields(
         raise ValueError("--plot-size-order requires --plot-size-by")
     if args.plot_size_order and len(args.plot_size_order) != len(set(args.plot_size_order)):
         raise ValueError("--plot-size-order contains duplicate values")
+    if args.plot_small_multiple_field:
+        if len(dict.fromkeys(args.plot_small_multiple_field)) > 4:
+            raise ValueError("--plot-small-multiple-field may select at most four fields")
+        composite_fields = (
+            args.plot_color_by,
+            args.plot_symbol_by,
+            args.plot_size_by,
+            args.plot_outline_by,
+            args.plot_center_by,
+        )
+        if any(composite_fields):
+            raise ValueError(
+                "Small-multiple fields cannot be combined with composite node encodings"
+            )
 
 
 def _prepare_plot_rows(
@@ -300,8 +316,11 @@ def _render_cluster_plot(
     size_by: str | None = None,
     size_order: Sequence[str] | None = None,
     outline_by: str | None = None,
+    center_by: str | None = None,
+    small_multiple_fields: Sequence[str] = (),
     hover_fields: Sequence[str] | None = None,
     combined_layout: str | None = None,
+    node_spacing: str = "normal",
     encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
 ) -> None:
     if plot_network == "none":
@@ -323,19 +342,33 @@ def _render_cluster_plot(
     if combined_layout is not None and "genotype" not in requested_hover_list:
         requested_hover_list.insert(0, "genotype")
     requested_hover = tuple(requested_hover_list)
-    fig = hcv_cluster_viz.build_network_figure(
-        node_rows,
-        edge_rows,
-        layout_mode=layout_mode,
-        group_by=group_by,
-        color_by=color_by,
-        symbol_by=symbol_by,
-        size_by=size_by,
-        size_order=size_order,
-        outline_by=outline_by,
-        hover_fields=requested_hover,
-        encoding_maps=encoding_maps,
-    )
+    if small_multiple_fields:
+        fig = hcv_cluster_viz.build_small_multiples_figure(
+            node_rows,
+            edge_rows,
+            small_multiple_fields,
+            layout_mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+            hover_fields=requested_hover,
+            encoding_maps=encoding_maps,
+        )
+    else:
+        fig = hcv_cluster_viz.build_network_figure(
+            node_rows,
+            edge_rows,
+            layout_mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+            color_by=color_by,
+            symbol_by=symbol_by,
+            size_by=size_by,
+            size_order=size_order,
+            outline_by=outline_by,
+            center_by=center_by,
+            hover_fields=requested_hover,
+            encoding_maps=encoding_maps,
+        )
     if plot_network in ("png", "both", "all"):
         try:
             fig.write_image(output_dir / f"{file_prefix}network.png", scale=2)
@@ -389,8 +422,13 @@ def _warn_plot_metadata(
         symbol_by=args.plot_symbol_by,
         size_by=args.plot_size_by,
         outline_by=args.plot_outline_by,
+        center_by=args.plot_center_by,
         size_order=args.plot_size_order,
     )
+    for field in args.plot_small_multiple_field or ():
+        warnings.extend(
+            hcv_cluster_viz.get_encoding_warnings(node_rows, color_by=field)
+        )
     for warning in dict.fromkeys(warnings):
         print(f"WARNING: {warning}", file=sys.stderr)
 
@@ -404,12 +442,15 @@ def _validate_plot_encodings(
         symbol_by=args.plot_symbol_by,
         size_by=args.plot_size_by,
         outline_by=args.plot_outline_by,
+        center_by=args.plot_center_by,
         size_order=args.plot_size_order,
     )
     unusable = [
         warning
         for warning in warnings
-        if "distinct marker shapes" in warning or "has no inherent size order" in warning
+        if "distinct marker shapes" in warning
+        or "distinct centre marks" in warning
+        or "has no inherent size order" in warning
     ]
     if unusable:
         raise ValueError("Invalid plot encoding: " + "; ".join(unusable))
@@ -464,11 +505,16 @@ def _render_requested_plots(
         ("color", args.plot_color_by),
         ("symbol", args.plot_symbol_by),
         ("outline", args.plot_outline_by),
+        ("center", args.plot_center_by),
     ):
         if field:
             encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
                 (row.get(field) for row in union_nodes), channel=channel
             )
+    for field in args.plot_small_multiple_field or ():
+        encoding_maps[f"color:{field}"] = hcv_cluster_viz.build_category_mapping(
+            (row.get(field) for row in union_nodes), channel="color"
+        )
     effective_hover_fields = (
         tuple(args.plot_hover_field)
         if args.plot_hover_field is not None
@@ -481,7 +527,10 @@ def _render_requested_plots(
         "size_by": args.plot_size_by,
         "size_order": args.plot_size_order,
         "outline_by": args.plot_outline_by,
+        "center_by": args.plot_center_by,
+        "small_multiple_fields": tuple(args.plot_small_multiple_field or ()),
         "hover_fields": effective_hover_fields,
+        "node_spacing": args.plot_node_spacing,
         "encoding_maps": encoding_maps,
     }
 
@@ -1180,6 +1229,15 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--plot-node-spacing",
+        metavar="CHOICE",
+        choices=("compact", "normal", "expanded"),
+        default="normal",
+        help=adv(
+            "Minimum collision-aware node separation: compact, normal (default), or expanded"
+        ),
+    )
+    run_parser.add_argument(
         "--plot-color-by",
         metavar="FIELD",
         default=None,
@@ -1214,6 +1272,22 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         metavar="FIELD",
         default=None,
         help=adv("Low-cardinality metadata field encoded as node outline colour"),
+    )
+    run_parser.add_argument(
+        "--plot-center-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as a small centre mark"),
+    )
+    run_parser.add_argument(
+        "--plot-small-multiple-field",
+        action="append",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Render the same network in a colour panel for this metadata field; repeat for "
+            "up to four fields. Cannot be combined with composite node encodings."
+        ),
     )
     run_parser.add_argument(
         "--plot-hover-field",

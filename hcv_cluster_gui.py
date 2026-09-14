@@ -168,13 +168,12 @@ def _epidemiology_defaults(
     """Choose conservative defaults only when the user requests the preset."""
     lowered = {field.casefold(): field for field in fields}
     ordered_size_fields = set(_size_display_fields(fields, node_rows))
-
     def first_named(*names: str) -> str | None:
         return next((lowered[name] for name in names if name in lowered), None)
 
     def low_cardinality(excluding: set[str]) -> str | None:
         for field in fields:
-            if field in ordered_size_fields:
+            if field in ordered_size_fields and field.casefold().replace(" ", "_") != "age_range":
                 continue
             values = {
                 str(row.get(field) or hcv_cluster_metadata.MISSING_VALUE)
@@ -186,15 +185,23 @@ def _epidemiology_defaults(
         return None
 
     color = first_named("location", "prison", "facility", "subtype", "genotype")
-    shape = first_named("injecting_status", "injecting status", "indigenous_status", "indigenous status")
+    shape = first_named("age_range", "age range")
     if shape == color:
         shape = None
     shape = shape or low_cardinality({color} if color else set())
-    size = first_named("age_range", "age range", "age")
     outline = first_named("indigenous_status", "indigenous status", "injecting_status", "injecting status")
     if outline in {color, shape}:
         outline = low_cardinality({value for value in (color, shape) if value})
-    return {"color": color, "symbol": shape, "size": size, "outline": outline}
+    center = first_named("injecting_status", "injecting status")
+    if center in {color, shape, outline}:
+        center = low_cardinality({value for value in (color, shape, outline) if value})
+    return {
+        "color": color,
+        "symbol": shape,
+        "size": None,
+        "outline": outline,
+        "center": center,
+    }
 
 
 def _safe_plot_filename(value: str) -> str:
@@ -245,7 +252,7 @@ def _run_tab() -> None:
             type=["csv"],
             help=(
                 "Requires a sample_id column matching FASTA identifiers. Other columns "
-                "are available for colour, shape, size, outline, and hover."
+                "are available for composite-node encodings, small-multiple panels, and hover."
             ),
         )
     metadata_error: str | None = None
@@ -673,22 +680,26 @@ def _render_results(outdir: Path, distance: str) -> None:
 
     fields = _metadata_display_fields(plot_node_rows)
     st.markdown("#### Node appearance and hover")
-    preset_col, reset_col, preset_help_col = st.columns([1, 1, 2])
-    with preset_col:
-        apply_epidemiology = st.button(
-            "Apply epidemiology view",
-            help="Choose sensible available metadata fields across several visual channels.",
+    mode_col, spacing_col = st.columns(2)
+    with mode_col:
+        display_mode = st.radio(
+            "Display mode",
+            ("Composite nodes", "Small multiples"),
+            horizontal=True,
+            key="network_display_mode",
+            help=(
+                "Composite nodes encode several fields on each node. Small multiples repeat "
+                "the same fixed network layout and colour it by up to four fields."
+            ),
         )
-    with reset_col:
-        reset_cluster = st.button(
-            "Reset to cluster view",
-            help="Restore cluster colours and remove all other node encodings.",
+    with spacing_col:
+        spacing_label = st.selectbox(
+            "Node spacing",
+            ("Normal", "Expanded", "Compact"),
+            key="network_node_spacing",
+            help="Collision-aware spacing separates nodes that would otherwise overlap.",
         )
-    with preset_help_col:
-        st.caption(
-            "You can then change any dropdown independently. These controls only restyle "
-            "the cached graph; they do not rerun clustering or move nodes."
-        )
+    node_spacing = spacing_label.casefold()
 
     size_fields = _size_display_fields(fields, plot_node_rows)
     channel_keys = {
@@ -696,49 +707,102 @@ def _render_results(outdir: Path, distance: str) -> None:
         "symbol": "network_symbol_by",
         "size": "network_size_by",
         "outline": "network_outline_by",
+        "center": "network_center_by",
     }
-    if reset_cluster:
-        for key in channel_keys.values():
-            st.session_state[key] = None
-    elif apply_epidemiology:
-        defaults = _epidemiology_defaults(fields, plot_node_rows)
+    color_by = symbol_by = size_by = outline_by = center_by = None
+    small_multiple_fields: list[str] = []
+    if display_mode == "Composite nodes":
+        preset_col, reset_col, preset_help_col = st.columns([1, 1, 2])
+        with preset_col:
+            apply_epidemiology = st.button(
+                "Apply epidemiology view",
+                help=(
+                    "Use location as fill, age range as shape, indigenous status as the "
+                    "outline, and injecting status as the centre mark when available."
+                ),
+            )
+        with reset_col:
+            reset_cluster = st.button(
+                "Reset to cluster view",
+                help="Restore cluster colours and remove all metadata encodings.",
+            )
+        with preset_help_col:
+            st.caption(
+                "Node size is retained as an optional advanced channel, but is no longer "
+                "used by the epidemiology preset because size differences are harder to read."
+            )
+        if reset_cluster:
+            for key in channel_keys.values():
+                st.session_state[key] = None
+        elif apply_epidemiology:
+            defaults = _epidemiology_defaults(fields, plot_node_rows)
+            for channel, key in channel_keys.items():
+                st.session_state[key] = defaults[channel]
         for channel, key in channel_keys.items():
-            st.session_state[key] = defaults[channel]
-    for channel, key in channel_keys.items():
-        options = size_fields if channel == "size" else fields
-        if st.session_state.get(key) not in [None, *options]:
-            st.session_state[key] = None
+            options = size_fields if channel == "size" else fields
+            if st.session_state.get(key) not in [None, *options]:
+                st.session_state[key] = None
 
-    appearance_columns = st.columns(4)
-    with appearance_columns[0]:
-        color_by = st.selectbox(
-            "Node colour",
-            [None, *fields],
-            format_func=lambda value: "Cluster (default)" if value is None else value,
-            key=channel_keys["color"],
+        appearance_columns = st.columns(5)
+        with appearance_columns[0]:
+            color_by = st.selectbox(
+                "Node colour",
+                [None, *fields],
+                format_func=lambda value: "Cluster (default)" if value is None else value,
+                key=channel_keys["color"],
+            )
+        with appearance_columns[1]:
+            symbol_by = st.selectbox(
+                "Node shape",
+                [None, *fields],
+                format_func=lambda value: "None" if value is None else value,
+                key=channel_keys["symbol"],
+            )
+        with appearance_columns[2]:
+            outline_by = st.selectbox(
+                "Node outline",
+                [None, *fields],
+                format_func=lambda value: "None" if value is None else value,
+                key=channel_keys["outline"],
+            )
+        with appearance_columns[3]:
+            center_by = st.selectbox(
+                "Centre mark",
+                [None, *fields],
+                format_func=lambda value: "None" if value is None else value,
+                key=channel_keys["center"],
+                help="Best for a binary or low-cardinality field such as injecting status.",
+            )
+        with appearance_columns[4]:
+            size_by = st.selectbox(
+                "Node size (advanced)",
+                [None, *size_fields],
+                format_func=lambda value: "None" if value is None else value,
+                key=channel_keys["size"],
+                help="Only numeric fields and age_range are offered.",
+            )
+    else:
+        lowered_fields = {field.casefold().replace(" ", "_"): field for field in fields}
+        preferred = [
+            lowered_fields[name]
+            for name in ("location", "age_range", "injecting_status", "indigenous_status")
+            if name in lowered_fields
+        ]
+        default_panels = list(dict.fromkeys(preferred))[:4] or fields[:4]
+        panel_key = "network_small_multiple_fields"
+        current_panels = [
+            field for field in st.session_state.get(panel_key, default_panels) if field in fields
+        ]
+        st.session_state[panel_key] = current_panels or default_panels
+        small_multiple_fields = st.multiselect(
+            "Panel metadata fields (maximum four)",
+            fields,
+            key=panel_key,
+            help="Every panel uses the same node positions and colour-encodes one field.",
         )
-    with appearance_columns[1]:
-        symbol_by = st.selectbox(
-            "Node shape",
-            [None, *fields],
-            format_func=lambda value: "None" if value is None else value,
-            key=channel_keys["symbol"],
-        )
-    with appearance_columns[2]:
-        size_by = st.selectbox(
-            "Node size",
-            [None, *size_fields],
-            format_func=lambda value: "None" if value is None else value,
-            key=channel_keys["size"],
-            help="Numeric fields and age_range are available for meaningful ordered sizes.",
-        )
-    with appearance_columns[3]:
-        outline_by = st.selectbox(
-            "Node outline",
-            [None, *fields],
-            format_func=lambda value: "None" if value is None else value,
-            key=channel_keys["outline"],
-        )
+        if len(small_multiple_fields) > 4:
+            st.error("Choose no more than four small-multiple fields.")
+            return
 
     hover_key = "network_hover_fields"
     if hover_key not in st.session_state:
@@ -754,13 +818,24 @@ def _render_results(outdir: Path, distance: str) -> None:
         help="Sample ID, cluster ID, and cluster size are always included.",
     )
 
-    for warning in hcv_cluster_viz.get_encoding_warnings(
-        plot_node_rows,
-        color_by=color_by,
-        symbol_by=symbol_by,
-        size_by=size_by,
-        outline_by=outline_by,
-    ):
+    if display_mode == "Composite nodes":
+        encoding_warnings = hcv_cluster_viz.get_encoding_warnings(
+            plot_node_rows,
+            color_by=color_by,
+            symbol_by=symbol_by,
+            size_by=size_by,
+            outline_by=outline_by,
+            center_by=center_by,
+        )
+    else:
+        encoding_warnings = [
+            warning
+            for field in small_multiple_fields
+            for warning in hcv_cluster_viz.get_encoding_warnings(
+                plot_node_rows, color_by=field
+            )
+        ]
+    for warning in dict.fromkeys(encoding_warnings):
         st.warning(warning)
 
     # Build maps from the complete saved metadata/root-node universe, not only the
@@ -773,11 +848,14 @@ def _render_results(outdir: Path, distance: str) -> None:
         else []
     )
     encoding_maps: dict[str, dict[str, str]] = {}
-    for channel, field in (
+    mapped_channels = [
         ("color", color_by),
         ("symbol", symbol_by),
         ("outline", outline_by),
-    ):
+        ("center", center_by),
+    ]
+    mapped_channels.extend(("color", field) for field in small_multiple_fields)
+    for channel, field in mapped_channels:
         if field is None:
             continue
         values = [row.get(field) for row in plot_node_rows]
@@ -801,6 +879,7 @@ def _render_results(outdir: Path, distance: str) -> None:
         view["metric"],
         layout_label,
         hide_singletons,
+        node_spacing,
         _network_fingerprint(plot_node_rows, plot_edge_rows),
     )
     layout_cache = st.session_state.setdefault("network_layout_cache", {})
@@ -810,6 +889,7 @@ def _render_results(outdir: Path, distance: str) -> None:
             plot_edge_rows,
             mode=layout_mode,
             group_by=group_by,
+            node_spacing=node_spacing,
         )
         # Avoid retaining layouts for an unbounded number of result directories.
         if len(layout_cache) > 24:
@@ -819,25 +899,39 @@ def _render_results(outdir: Path, distance: str) -> None:
 
     with st.spinner("Building network..."):
         try:
-            fig = hcv_cluster_viz.build_network_figure(
-                plot_node_rows,
-                plot_edge_rows,
-                positions=layout_cache[cache_key],
-                group_by=group_by,
-                color_by=color_by,
-                symbol_by=symbol_by,
-                size_by=size_by,
-                outline_by=outline_by,
-                hover_fields=hover_fields,
-                encoding_maps=encoding_maps,
-            )
+            if display_mode == "Small multiples":
+                fig = hcv_cluster_viz.build_small_multiples_figure(
+                    plot_node_rows,
+                    plot_edge_rows,
+                    small_multiple_fields,
+                    positions=layout_cache[cache_key],
+                    hover_fields=hover_fields,
+                    encoding_maps=encoding_maps,
+                )
+            else:
+                fig = hcv_cluster_viz.build_network_figure(
+                    plot_node_rows,
+                    plot_edge_rows,
+                    positions=layout_cache[cache_key],
+                    group_by=group_by,
+                    color_by=color_by,
+                    symbol_by=symbol_by,
+                    size_by=size_by,
+                    outline_by=outline_by,
+                    center_by=center_by,
+                    hover_fields=hover_fields,
+                    encoding_maps=encoding_maps,
+                )
         except ValueError as exc:
             st.error(f"Cannot apply the selected network appearance: {exc}")
             return
     st.plotly_chart(fig, width="stretch")
 
     scope_filename = "all_genotypes" if scope == "All genotypes" else scope
-    filename_base = _safe_plot_filename(f"{scope_filename}_{view['metric']}_network")
+    mode_suffix = "_small_multiples" if display_mode == "Small multiples" else ""
+    filename_base = _safe_plot_filename(
+        f"{scope_filename}_{view['metric']}_network{mode_suffix}"
+    )
     download_columns = st.columns(2)
     try:
         png_bytes = fig.to_image(format="png", scale=2)

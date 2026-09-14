@@ -104,9 +104,34 @@ def test_metadata_channels_have_independent_legends_and_hover_only_ids() -> None
         if trace.legendgrouptitle and trace.legendgrouptitle.text
     }
     assert titles == {
-        "Colour: location", "Shape: status", "Size: age_range", "Outline: indigenous",
+        "Colour: location", "Shape: status", "Size: age range", "Outline: indigenous",
     }
     assert list(node_trace.marker.size[:3]) == [9.0, 14.0, 19.0]
+
+
+def test_center_mark_adds_vector_overlay_and_independent_legend() -> None:
+    nodes, edges = _metadata_network()
+
+    figure = hcv_cluster_viz.build_network_figure(
+        nodes,
+        edges,
+        color_by="location",
+        symbol_by="age_range",
+        outline_by="indigenous",
+        center_by="status",
+    )
+
+    center_trace = figure.data[2]
+    assert center_trace.name == "Centre marks"
+    assert center_trace.mode == "markers"
+    assert list(center_trace.x) == list(figure.data[1].x)
+    assert center_trace.text[0].startswith("<b>A</b>")
+    titles = {
+        trace.legendgrouptitle.text
+        for trace in figure.data[3:]
+        if trace.legendgrouptitle and trace.legendgrouptitle.text
+    }
+    assert "Centre: status" in titles
 
 
 def test_missing_values_are_explicit_in_hover_and_legend() -> None:
@@ -147,6 +172,25 @@ def test_component_layout_is_deterministic_and_handles_combined_genotypes() -> N
     assert max(positions[node][0] for node in ("A", "B")) < min(
         positions[node][0] for node in ("C", "D")
     )
+
+
+def test_collision_aware_layout_enforces_expanded_minimum_spacing() -> None:
+    nodes = [
+        {"sample_id": str(index), "cluster_id": "C1", "cluster_size": "12"}
+        for index in range(12)
+    ]
+    positions = hcv_cluster_viz.compute_network_layout(
+        nodes, [], mode="spring", node_spacing="expanded"
+    )
+
+    distances = [
+        ((positions[left][0] - positions[right][0]) ** 2
+         + (positions[left][1] - positions[right][1]) ** 2) ** 0.5
+        for left in positions
+        for right in positions
+        if left < right
+    ]
+    assert min(distances) >= 0.279
 
 
 def test_grouped_combined_figure_labels_each_genotype_region() -> None:
@@ -210,6 +254,28 @@ def test_unordered_categorical_size_requires_explicit_order() -> None:
         nodes, edges, size_by="status", size_order=["no", "yes"],
     )
     assert list(figure.data[1].marker.size) == [19.0, 9.0, 19.0, 9.0]
+
+
+def test_small_multiples_reuse_positions_and_keep_hover_only_labels() -> None:
+    nodes, edges = _metadata_network()
+    positions = hcv_cluster_viz.compute_network_layout(nodes, edges, mode="components")
+
+    figure = hcv_cluster_viz.build_small_multiples_figure(
+        nodes,
+        edges,
+        ["location", "age_range"],
+        positions=positions,
+        hover_fields=["genotype"],
+    )
+
+    sample_traces = [trace for trace in figure.data if trace.name == "Samples"]
+    assert len(sample_traces) == 2
+    assert list(sample_traces[0].x) == list(sample_traces[1].x)
+    assert all(trace.mode == "markers" for trace in sample_traces)
+    assert figure.layout.meta["small_multiple_fields"] == ["location", "age_range"]
+    assert {annotation.text for annotation in figure.layout.annotations} == {
+        "location", "age range",
+    }
 
 
 def test_svg_helper_rejects_raster_and_writes_vector(monkeypatch, tmp_path) -> None:

@@ -54,12 +54,15 @@ def _plot_args(**overrides: object) -> argparse.Namespace:
         "plot_network": "html",
         "plot_scope": "per-genotype",
         "plot_combined_layout": "packed",
+        "plot_node_spacing": "normal",
         "plot_hide_singletons": False,
         "plot_color_by": None,
         "plot_symbol_by": None,
         "plot_size_by": None,
         "plot_size_order": None,
         "plot_outline_by": None,
+        "plot_center_by": None,
+        "plot_small_multiple_field": None,
         "plot_hover_field": None,
         "distance": "tn93",
     }
@@ -81,6 +84,8 @@ def test_parser_accepts_metadata_encodings_svg_and_combined_scope(tmp_path: Path
             "both",
             "--plot-combined-layout",
             "by-genotype",
+            "--plot-node-spacing",
+            "expanded",
             "--plot-color-by",
             "location",
             "--plot-symbol-by",
@@ -93,6 +98,8 @@ def test_parser_accepts_metadata_encodings_svg_and_combined_scope(tmp_path: Path
             "high",
             "--plot-outline-by",
             "injecting",
+            "--plot-center-by",
+            "coinfection",
             "--plot-hover-field",
             "subtype",
             "--plot-hover-field",
@@ -103,6 +110,8 @@ def test_parser_accepts_metadata_encodings_svg_and_combined_scope(tmp_path: Path
     assert args.plot_network == "all"
     assert args.plot_scope == "both"
     assert args.plot_combined_layout == "by-genotype"
+    assert args.plot_node_spacing == "expanded"
+    assert args.plot_center_by == "coinfection"
     assert args.plot_size_order == ["low", "high"]
     assert args.plot_hover_field == ["subtype", "location"]
 
@@ -113,7 +122,27 @@ def test_parser_plot_defaults_remain_backward_compatible() -> None:
     assert args.plot_network == "none"
     assert args.plot_scope == "per-genotype"
     assert args.plot_combined_layout == "packed"
+    assert args.plot_node_spacing == "normal"
     assert args.plot_color_by is None
+
+
+def test_small_multiples_reject_composite_encodings() -> None:
+    args = hcv_cluster.build_parser().parse_args(
+        [
+            "run",
+            "--input",
+            "samples.fasta",
+            "--plot-small-multiple-field",
+            "location",
+            "--plot-color-by",
+            "location",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        hcv_cluster._validate_plot_fields(
+            args, [{"sample_id": "A", "location": "P1"}]
+        )
 
 
 def test_unknown_plot_field_is_rejected_before_genotyping(tmp_path: Path, monkeypatch) -> None:
@@ -330,3 +359,29 @@ def test_combined_layout_passes_component_packing_to_renderer(tmp_path: Path, mo
     assert build.call_args.kwargs["layout_mode"] == "component_packed"
     assert build.call_args.kwargs["group_by"] == "genotype"
     assert build.call_args.kwargs["hover_fields"] == ("genotype",)
+
+
+def test_small_multiple_render_uses_shared_renderer(tmp_path: Path, monkeypatch) -> None:
+    clusters, links = tmp_path / "clusters.csv", tmp_path / "links.csv"
+    _write_network_tables(clusters, links, combined=True)
+    figure = SimpleNamespace(write_image=Mock(), write_html=Mock())
+    build = Mock(return_value=figure)
+    monkeypatch.setattr(
+        hcv_cluster.hcv_cluster_viz, "build_small_multiples_figure", build
+    )
+
+    hcv_cluster._render_cluster_plot(
+        "html",
+        False,
+        tmp_path,
+        clusters,
+        links,
+        "",
+        combined_layout="packed",
+        small_multiple_fields=("genotype",),
+        node_spacing="expanded",
+    )
+
+    assert build.call_args.args[2] == ("genotype",)
+    assert build.call_args.kwargs["layout_mode"] == "component_packed"
+    assert build.call_args.kwargs["node_spacing"] == "expanded"

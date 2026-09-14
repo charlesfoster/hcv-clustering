@@ -183,9 +183,10 @@ pixi run hcv-cluster run -i samples.fasta \
   --plot-network all \
   --plot-scope both \
   --plot-color-by location \
-  --plot-symbol-by injecting_status \
-  --plot-size-by age_range \
+  --plot-symbol-by age_range \
   --plot-outline-by indigenous_status \
+  --plot-center-by injecting_status \
+  --plot-node-spacing expanded \
   --plot-hover-field subtype
 ```
 
@@ -193,7 +194,22 @@ pixi run hcv-cluster run -i samples.fasta \
 
 When an `age` column is supplied, the workflow validates it as a non-negative whole number and derives the ordered `age_range` categories `0–30`, `31–60`, and `61+`. You may instead supply `age_range` directly; both ASCII forms (`0-30`, `31-60`) and en-dash forms are accepted and normalized. If both columns are present, they must agree.
 
-Colour, shape, size, and outline are independent channels and can be used simultaneously. `--plot-color-by`, `--plot-symbol-by`, `--plot-size-by`, and `--plot-outline-by` each accept a metadata field; `genotype` is also available. Shape and outline work best for a small number of categories. Size accepts numeric or intrinsically ordered data such as `age_range`; for another categorical field, repeat `--plot-size-order VALUE` from smallest to largest. Repeat `--plot-hover-field FIELD` to select several hover fields. Sample ID and cluster details are always included in interactive hover text, while static PNG/SVG files deliberately do not draw sample-name labels.
+Colour, shape, outline, and a small centre mark are independent channels and can be used simultaneously through `--plot-color-by`, `--plot-symbol-by`, `--plot-outline-by`, and `--plot-center-by`. The recommended epidemiological mapping is location by colour, `age_range` by shape, indigenous status by outline, and injecting status by centre mark. These channels retain a common node footprint and are easier to distinguish than small changes in node area. Node size remains available through the advanced `--plot-size-by` channel for numeric or intrinsically ordered data; for another categorical field, repeat `--plot-size-order VALUE` from smallest to largest. Shape, outline, and centre marks work best for small numbers of categories. Repeat `--plot-hover-field FIELD` to select several hover fields. Sample ID and cluster details are always included in interactive hover text, while static PNG/SVG files deliberately do not draw sample-name labels.
+
+For a clearer publication view, repeat the same fixed network in up to four colour panels:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta \
+  --metadata sample_metadata.csv \
+  --plot-network svg \
+  --plot-scope combined \
+  --plot-small-multiple-field location \
+  --plot-small-multiple-field age_range \
+  --plot-small-multiple-field injecting_status \
+  --plot-small-multiple-field indigenous_status
+```
+
+Each small-multiple panel has identical node positions, so topology can be compared directly while colour carries only one meaning per panel. Small multiples cannot be combined with composite node-encoding flags. `--plot-node-spacing` accepts `compact`, `normal` (default), or `expanded`; it applies deterministic collision removal before components are packed.
 
 ### GUI
 
@@ -209,7 +225,9 @@ The FASTA uploader has an optional metadata CSV uploader beside it. The GUI vali
 
 After a run, choose **All genotypes** or an individual genotype (and a metric, if `--distance both`) and click **View / update network**. The all-genotype view can either pack all disconnected clusters together or group them spatially by genotype. This toggle changes only the display: clustering remains genotype-stratified and there are no cross-genotype distance comparisons or links.
 
-The displayed metadata can then be changed repeatedly without rerunning clustering. Independent dropdowns map fields to node colour, shape, size, and outline, so several metadata types can be visible at once; additional fields can be selected for hover. **Apply epidemiology view** chooses conservative suggestions from the available fields, while **Reset to cluster view** restores the familiar cluster colours. Sample ID and cluster details always remain in hover. Layout positions are cached for the selected graph, layout, and singleton setting, so changing metadata does not make nodes jump around. High-cardinality encodings produce readability warnings rather than silently changing the data.
+The displayed metadata can then be changed repeatedly without rerunning clustering. **Composite nodes** provides independent dropdowns for colour, shape, outline, centre mark, and optional advanced size. **Apply epidemiology view** maps location to fill colour, age range to shape, indigenous status to outline, and injecting status to a centre mark when those fields are available; **Reset to cluster view** restores the familiar cluster colours. **Small multiples** shows up to four copies of the same network at once, using identical positions and one colour-coded metadata field per panel. Additional fields can always be selected for hover.
+
+The **Node spacing** selector offers compact, normal, and expanded collision-aware layouts. Positions are cached for the selected graph, layout, singleton setting, and spacing, so changing metadata does not make nodes jump around. Sample ID and cluster details always remain in hover. High-cardinality encodings produce readability warnings rather than silently changing the data.
 
 Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
 

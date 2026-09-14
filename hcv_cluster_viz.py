@@ -16,11 +16,13 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 import networkx as nx
 import plotly.colors
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from hcv_cluster_metadata import AGE_RANGE_ORDER, MISSING_VALUE
 
 PositionMap = dict[str, tuple[float, float]]
 LayoutMode = Literal["spring", "components", "component_packed"]
+NodeSpacing = Literal["compact", "normal", "expanded"]
 
 _SYMBOLS = (
     "circle", "square", "diamond", "triangle-up", "triangle-down", "pentagon",
@@ -28,6 +30,12 @@ _SYMBOLS = (
 )
 _PALETTE = tuple(plotly.colors.qualitative.Dark24)
 _OUTLINE_PALETTE = _PALETTE[8:] + _PALETTE[:8]
+_CENTER_SYMBOLS = ("circle", "x", "cross", "diamond", "star")
+_SPACING_CONFIG = {
+    "compact": (0.10, 0.45),
+    "normal": (0.18, 0.75),
+    "expanded": (0.28, 1.20),
+}
 
 
 def filter_singletons(
@@ -62,7 +70,71 @@ def _stable_seed(value: str, seed: int) -> int:
     return int.from_bytes(hashlib.sha256(f"{seed}:{value}".encode()).digest()[:4], "big")
 
 
-def _normalized_component_layout(graph: nx.Graph, nodes: Sequence[str], seed: int) -> PositionMap:
+def _separate_overlapping_nodes(
+    positions: Mapping[str, Sequence[float]], min_distance: float
+) -> PositionMap:
+    """Deterministically separate node centres while preserving the layout centroid."""
+    ordered = sorted(positions)
+    if len(ordered) < 2:
+        return {
+            node: (float(positions[node][0]), float(positions[node][1]))
+            for node in ordered
+        }
+    original_center = (
+        sum(float(positions[node][0]) for node in ordered) / len(ordered),
+        sum(float(positions[node][1]) for node in ordered) / len(ordered),
+    )
+    current = {
+        node: [float(positions[node][0]), float(positions[node][1])]
+        for node in ordered
+    }
+    for _iteration in range(200):
+        deltas = {node: [0.0, 0.0] for node in ordered}
+        found_overlap = False
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1:]:
+                dx = current[right][0] - current[left][0]
+                dy = current[right][1] - current[left][1]
+                distance = math.hypot(dx, dy)
+                if distance >= min_distance:
+                    continue
+                found_overlap = True
+                if distance < 1e-12:
+                    angle = (
+                        _stable_seed(f"{left}|{right}", 42) / (2**32 - 1)
+                    ) * 2 * math.pi
+                    unit_x, unit_y = math.cos(angle), math.sin(angle)
+                else:
+                    unit_x, unit_y = dx / distance, dy / distance
+                push = (min_distance - distance) / 2 + 1e-6
+                deltas[left][0] -= unit_x * push
+                deltas[left][1] -= unit_y * push
+                deltas[right][0] += unit_x * push
+                deltas[right][1] += unit_y * push
+        if not found_overlap:
+            break
+        for node in ordered:
+            current[node][0] += deltas[node][0]
+            current[node][1] += deltas[node][1]
+
+    current_center = (
+        sum(current[node][0] for node in ordered) / len(ordered),
+        sum(current[node][1] for node in ordered) / len(ordered),
+    )
+    shift_x = original_center[0] - current_center[0]
+    shift_y = original_center[1] - current_center[1]
+    return {
+        node: (current[node][0] + shift_x, current[node][1] + shift_y)
+        for node in ordered
+    }
+
+
+def _normalized_component_layout(
+    graph: nx.Graph,
+    nodes: Sequence[str],
+    seed: int,
+    min_distance: float,
+) -> PositionMap:
     ordered = sorted(nodes)
     if len(ordered) == 1:
         return {ordered[0]: (0.0, 0.0)}
@@ -73,16 +145,27 @@ def _normalized_component_layout(graph: nx.Graph, nodes: Sequence[str], seed: in
     )
     extent = max(max(abs(float(point[0])), abs(float(point[1]))) for point in raw.values()) or 1.0
     radius = min(1.35, 0.65 + 0.12 * math.sqrt(len(ordered)))
-    return {
+    normalized = {
         node: (float(raw[node][0]) / extent * radius, float(raw[node][1]) / extent * radius)
         for node in ordered
     }
+    separated = _separate_overlapping_nodes(normalized, min_distance)
+    min_x = min(point[0] for point in separated.values())
+    max_x = max(point[0] for point in separated.values())
+    min_y = min(point[1] for point in separated.values())
+    max_y = max(point[1] for point in separated.values())
+    center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
+    return {node: (x - center_x, y - center_y) for node, (x, y) in separated.items()}
 
 
 def _display_value(value: Any) -> str:
     if value is None or (isinstance(value, str) and not value.strip()):
         return MISSING_VALUE
     return str(value)
+
+
+def _field_label(field: str) -> str:
+    return field.replace("_", " ")
 
 
 def _category_sort_key(value: str) -> tuple[int, int | str]:
@@ -100,6 +183,7 @@ def compute_network_layout(
     mode: LayoutMode = "spring",
     group_by: str | None = None,
     seed: int = 42,
+    node_spacing: NodeSpacing = "normal",
 ) -> PositionMap:
     """Return deterministic positions that callers can cache and reuse.
 
@@ -107,12 +191,15 @@ def compute_network_layout(
     ``component_packed``) lays out connected components independently. Supplying a
     field such as ``group_by='genotype'`` places component grids in group regions.
     """
+    if node_spacing not in _SPACING_CONFIG:
+        raise ValueError(f"Unknown node spacing: {node_spacing!r}")
+    min_distance, component_gap = _SPACING_CONFIG[node_spacing]
     graph = _graph_from_rows(node_rows, edge_rows)
     if not graph:
         return {}
     if mode == "spring":
         raw = nx.spring_layout(graph, seed=seed, k=1 / math.sqrt(len(graph)))
-        return {node: (float(point[0]), float(point[1])) for node, point in raw.items()}
+        return _separate_overlapping_nodes(raw, min_distance)
     if mode not in ("components", "component_packed"):
         raise ValueError(f"Unknown layout mode: {mode!r}")
     if group_by is not None and any(group_by not in data for _, data in graph.nodes(data=True)):
@@ -135,13 +222,51 @@ def compute_network_layout(
         group_components = grouped[label]
         columns = max(1, math.ceil(math.sqrt(len(group_components))))
         rows = math.ceil(len(group_components) / columns)
-        spacing = 3.4
+        local_layouts = [
+            _normalized_component_layout(graph, component, seed, min_distance)
+            for component in group_components
+        ]
+        dimensions = []
+        for local in local_layouts:
+            x_values = [point[0] for point in local.values()]
+            y_values = [point[1] for point in local.values()]
+            dimensions.append(
+                (
+                    max(max(x_values) - min(x_values), min_distance),
+                    max(max(y_values) - min(y_values), min_distance),
+                )
+            )
+        column_widths = [
+            max(
+                (dimensions[index][0] for index in range(column, len(dimensions), columns)),
+                default=min_distance,
+            )
+            for column in range(columns)
+        ]
+        row_heights = [
+            max(
+                dimensions[index][1]
+                for index in range(row * columns, min((row + 1) * columns, len(dimensions)))
+            )
+            for row in range(rows)
+        ]
+        x_centers: list[float] = []
+        cursor_x = group_offset_x
+        for width in column_widths:
+            x_centers.append(cursor_x + width / 2)
+            cursor_x += width + component_gap
+        total_height = sum(row_heights) + component_gap * max(rows - 1, 0)
+        y_centers: list[float] = []
+        cursor_y = total_height / 2
+        for height in row_heights:
+            y_centers.append(cursor_y - height / 2)
+            cursor_y -= height + component_gap
         for index, component in enumerate(group_components):
-            center_x = group_offset_x + (index % columns) * spacing
-            center_y = (rows - 1) * spacing / 2 - (index // columns) * spacing
-            for node, (x, y) in _normalized_component_layout(graph, component, seed).items():
+            center_x = x_centers[index % columns]
+            center_y = y_centers[index // columns]
+            for node, (x, y) in local_layouts[index].items():
                 positions[node] = (x + center_x, y + center_y)
-        group_offset_x += max(columns - 1, 0) * spacing + 5.5
+        group_offset_x = cursor_x + component_gap * 2
     return positions
 
 
@@ -153,12 +278,17 @@ def ordered_categories(values: Iterable[Any]) -> tuple[str, ...]:
 def build_category_mapping(
     values: Iterable[Any],
     *,
-    channel: Literal["color", "symbol", "outline"] = "color",
+    channel: Literal["color", "symbol", "outline", "center"] = "color",
 ) -> dict[str, str]:
     """Build an input-order-independent mapping suitable for reuse across plots."""
     categories = ordered_categories(values)
     if channel == "symbol":
         return {value: _SYMBOLS[index % len(_SYMBOLS)] for index, value in enumerate(categories)}
+    if channel == "center":
+        return {
+            value: _CENTER_SYMBOLS[index % len(_CENTER_SYMBOLS)]
+            for index, value in enumerate(categories)
+        }
     palette = _OUTLINE_PALETTE if channel == "outline" else _PALETTE
     # Sorted sequential assignment avoids hash collisions within a plot. To keep
     # colours identical across filtered subsets, build once from the complete node
@@ -184,12 +314,16 @@ def get_encoding_warnings(
     symbol_by: str | None = None,
     size_by: str | None = None,
     outline_by: str | None = None,
+    center_by: str | None = None,
     size_order: Sequence[Any] | None = None,
 ) -> list[str]:
     """Describe encodings that are likely to be difficult to read."""
     result: list[str] = []
     for field, label, recommended_max in (
-        (color_by, "colour", 20), (symbol_by, "shape", 8), (outline_by, "outline", 8)
+        (color_by, "colour", 20),
+        (symbol_by, "shape", 8),
+        (outline_by, "outline", 8),
+        (center_by, "centre mark", 4),
     ):
         if field:
             count = len(ordered_categories(row.get(field) for row in node_rows))
@@ -204,6 +338,13 @@ def get_encoding_warnings(
             result.append(
                 f"{symbol_by!r} exceeds the {len(_SYMBOLS)} distinct marker shapes; "
                 "filter categories or choose another shape field"
+            )
+    if center_by:
+        count = len(ordered_categories(row.get(center_by) for row in node_rows))
+        if count > len(_CENTER_SYMBOLS):
+            result.append(
+                f"{center_by!r} exceeds the {len(_CENTER_SYMBOLS)} distinct centre marks; "
+                "filter categories or choose another centre field"
             )
     if size_by:
         values = [_display_value(row.get(size_by)) for row in node_rows]
@@ -305,10 +446,12 @@ def build_network_figure(
     positions: Mapping[str, Sequence[float]] | None = None,
     layout_mode: LayoutMode = "spring",
     group_by: str | None = None,
+    node_spacing: NodeSpacing = "normal",
     color_by: str | None = None,
     symbol_by: str | None = None,
     size_by: str | None = None,
     outline_by: str | None = None,
+    center_by: str | None = None,
     hover_fields: Sequence[str] | None = None,
     encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
     size_order: Sequence[Any] | None = None,
@@ -326,10 +469,19 @@ def build_network_figure(
         field for field in dict.fromkeys(field for row in node_rows for field in row)
         if field not in {"sample_id", "cluster_id", "cluster_size"}
     ]
-    _require_fields(node_rows, (color_by, symbol_by, size_by, outline_by, group_by, *requested_hover))
+    _require_fields(
+        node_rows,
+        (color_by, symbol_by, size_by, outline_by, center_by, group_by, *requested_hover),
+    )
     graph = _graph_from_rows(node_rows, edge_rows)
     if positions is None:
-        layout = compute_network_layout(node_rows, edge_rows, mode=layout_mode, group_by=group_by)
+        layout = compute_network_layout(
+            node_rows,
+            edge_rows,
+            mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+        )
     else:
         missing_positions = sorted(set(graph).difference(positions))
         if missing_positions:
@@ -367,7 +519,12 @@ def build_network_figure(
             raise ValueError(f"Colour map for {color_by!r} lacks: {', '.join(unknown)}")
         node_colors = [mapping[value] for value in values]
         legends += [
-            _legend_trace(name=value, group=f"color:{color_by}", title=f"Colour: {color_by}", color=mapping[value])
+            _legend_trace(
+                name=value,
+                group=f"color:{color_by}",
+                title=f"Colour: {_field_label(color_by)}",
+                color=mapping[value],
+            )
             for value in ordered_categories(values)
         ]
     else:
@@ -389,7 +546,12 @@ def build_network_figure(
             raise ValueError(f"Symbol map for {symbol_by!r} lacks: {', '.join(unknown)}")
         node_symbols = [mapping[value] for value in values]
         legends += [
-            _legend_trace(name=value, group=f"symbol:{symbol_by}", title=f"Shape: {symbol_by}", symbol=mapping[value])
+            _legend_trace(
+                name=value,
+                group=f"symbol:{symbol_by}",
+                title=f"Shape: {_field_label(symbol_by)}",
+                symbol=mapping[value],
+            )
             for value in ordered_categories(values)
         ]
     else:
@@ -403,7 +565,12 @@ def build_network_figure(
             else _size_encoding(values)
         )
         legends += [
-            _legend_trace(name=label, group=f"size:{size_by}", title=f"Size: {size_by}", size=size)
+            _legend_trace(
+                name=label,
+                group=f"size:{size_by}",
+                title=f"Size: {_field_label(size_by)}",
+                size=size,
+            )
             for label, size in size_legend
         ]
     else:
@@ -421,12 +588,47 @@ def build_network_figure(
         outline_colors = [mapping[value] for value in values]
         outline_widths = [2.5] * len(node_data)
         legends += [
-            _legend_trace(name=value, group=f"outline:{outline_by}", title=f"Outline: {outline_by}", color="#ffffff", line_color=mapping[value], line_width=3)
+            _legend_trace(
+                name=value,
+                group=f"outline:{outline_by}",
+                title=f"Outline: {_field_label(outline_by)}",
+                color="#ffffff",
+                line_color=mapping[value],
+                line_width=3,
+            )
             for value in ordered_categories(values)
         ]
     else:
         outline_colors = ["#333333"] * len(node_data)
         outline_widths = [1.0] * len(node_data)
+
+    center_trace: go.Scatter | None = None
+    if center_by:
+        values = [_display_value(data.get(center_by)) for data in node_data]
+        if len(set(values)) > len(_CENTER_SYMBOLS):
+            raise ValueError(
+                f"{center_by!r} has more than {len(_CENTER_SYMBOLS)} categories and "
+                "cannot be represented with distinct centre marks"
+            )
+        mapping = dict(
+            _supplied_encoding_map(supplied_maps, "center", center_by)
+            or build_category_mapping(values, channel="center")
+        )
+        unknown = sorted(set(values).difference(mapping))
+        if unknown:
+            raise ValueError(f"Centre map for {center_by!r} lacks: {', '.join(unknown)}")
+        legends += [
+            _legend_trace(
+                name=value,
+                group=f"center:{center_by}",
+                title=f"Centre: {_field_label(center_by)}",
+                color="#222222",
+                symbol=mapping[value],
+                size=8,
+                line_width=0,
+            )
+            for value in ordered_categories(values)
+        ]
 
     hover_text: list[str] = []
     for sample_id, data in zip(ordered_nodes, node_data, strict=True):
@@ -444,12 +646,29 @@ def build_network_figure(
         marker=dict(color=node_colors, size=node_sizes, symbol=node_symbols, line=dict(width=outline_widths, color=outline_colors)),
         text=hover_text, hovertemplate="%{text}<extra></extra>", name="Samples", showlegend=False,
     )
+    if center_by:
+        center_trace = go.Scatter(
+            x=[layout[node][0] for node in ordered_nodes],
+            y=[layout[node][1] for node in ordered_nodes],
+            mode="markers",
+            marker=dict(
+                color="#222222",
+                size=6,
+                symbol=[mapping[value] for value in values],
+                line=dict(width=0),
+            ),
+            text=hover_text,
+            hovertemplate="%{text}<extra></extra>",
+            name="Centre marks",
+            showlegend=False,
+        )
     warnings = get_encoding_warnings(
         node_rows,
         color_by=color_by,
         symbol_by=symbol_by,
         size_by=size_by,
         outline_by=outline_by,
+        center_by=center_by,
         size_order=size_order,
     )
     annotations: list[dict[str, Any]] = []
@@ -465,12 +684,15 @@ def build_network_figure(
                 {
                     "x": (min(group_x) + max(group_x)) / 2,
                     "y": max(group_y) + 0.55,
-                    "text": f"{html.escape(group_by)}: {html.escape(group_label)}",
+                    "text": f"{html.escape(_field_label(group_by))}: {html.escape(group_label)}",
                     "showarrow": False,
                     "font": {"size": 14},
                 }
             )
-    fig = go.Figure(data=[edge_trace, node_trace, *legends])
+    data_traces = [edge_trace, node_trace]
+    if center_trace is not None:
+        data_traces.append(center_trace)
+    fig = go.Figure(data=[*data_traces, *legends])
     fig.update_layout(
         showlegend=bool(legends), legend=dict(tracegroupgap=12),
         xaxis=dict(visible=False), yaxis=dict(visible=False),
@@ -480,6 +702,87 @@ def build_network_figure(
         meta={"encoding_warnings": warnings, "positions": {node: list(layout[node]) for node in ordered_nodes}},
     )
     return fig
+
+
+def build_small_multiples_figure(
+    node_rows: list[dict[str, Any]],
+    edge_rows: list[dict[str, Any]],
+    fields: Sequence[str],
+    *,
+    positions: Mapping[str, Sequence[float]] | None = None,
+    layout_mode: LayoutMode = "spring",
+    group_by: str | None = None,
+    node_spacing: NodeSpacing = "normal",
+    hover_fields: Sequence[str] | None = None,
+    encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
+    columns: int = 2,
+) -> go.Figure:
+    """Render up to four metadata views with identical node positions.
+
+    Each panel uses colour—the most readily compared visual channel—for one field.
+    The resulting Plotly figure remains vector-safe for SVG export.
+    """
+    selected_fields = list(dict.fromkeys(fields))
+    if not selected_fields:
+        raise ValueError("Select at least one metadata field for small multiples")
+    if len(selected_fields) > 4:
+        raise ValueError("Small multiples support at most four metadata fields")
+    _require_fields(node_rows, selected_fields)
+    if columns < 1:
+        raise ValueError("Small-multiple column count must be positive")
+    if positions is None:
+        layout = compute_network_layout(
+            node_rows,
+            edge_rows,
+            mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+        )
+    else:
+        layout = {
+            str(node): (float(point[0]), float(point[1]))
+            for node, point in positions.items()
+        }
+
+    panel_columns = min(columns, len(selected_fields))
+    panel_rows = math.ceil(len(selected_fields) / panel_columns)
+    figure = make_subplots(
+        rows=panel_rows,
+        cols=panel_columns,
+        subplot_titles=[_field_label(field) for field in selected_fields],
+        horizontal_spacing=0.12,
+        vertical_spacing=0.12,
+    )
+    for index, field in enumerate(selected_fields):
+        row = index // panel_columns + 1
+        column = index % panel_columns + 1
+        panel = build_network_figure(
+            node_rows,
+            edge_rows,
+            positions=layout,
+            color_by=field,
+            hover_fields=hover_fields,
+            encoding_maps=encoding_maps,
+            height=420,
+        )
+        for trace in panel.data:
+            figure.add_trace(trace, row=row, col=column)
+
+    figure.update_xaxes(visible=False)
+    figure.update_yaxes(visible=False)
+    figure.update_layout(
+        showlegend=True,
+        legend=dict(tracegroupgap=12, x=1.02, xanchor="left", y=1, yanchor="top"),
+        margin=dict(l=30, r=300, t=60, b=30),
+        width=max(1000, 520 * panel_columns + 300),
+        height=max(520, 460 * panel_rows),
+        plot_bgcolor="rgba(0,0,0,0)",
+        meta={
+            "small_multiple_fields": selected_fields,
+            "positions": {node: list(point) for node, point in layout.items()},
+        },
+    )
+    return figure
 
 
 def export_figure_svg(figure: go.Figure, path: str | Path) -> Path:

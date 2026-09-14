@@ -1,31 +1,340 @@
 #!/usr/bin/env python3
-"""Cluster-network visualization, shared by the CLI (--plot-network) and the Streamlit GUI."""
+"""Network visualization shared by the CLI and Streamlit GUI.
+
+The clustering tables remain the source of graph topology. Optional metadata only
+changes presentation and hover text.
+"""
 
 from __future__ import annotations
+
+import hashlib
+import html
+import math
+from pathlib import Path
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import networkx as nx
 import plotly.colors
 import plotly.graph_objects as go
 
+from hcv_cluster_metadata import AGE_RANGE_ORDER, MISSING_VALUE
+
+PositionMap = dict[str, tuple[float, float]]
+LayoutMode = Literal["spring", "components", "component_packed"]
+
+_SYMBOLS = (
+    "circle", "square", "diamond", "triangle-up", "triangle-down", "pentagon",
+    "hexagon", "star", "cross", "x", "hourglass", "bowtie",
+)
+_PALETTE = tuple(plotly.colors.qualitative.Dark24)
+_OUTLINE_PALETTE = _PALETTE[8:] + _PALETTE[:8]
+
 
 def filter_singletons(
-    node_rows: list[dict[str, str]], edge_rows: list[dict[str, str]]
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    node_rows: list[dict[str, Any]], edge_rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     kept_ids = {row["sample_id"] for row in node_rows if int(row["cluster_size"]) > 1}
     filtered_nodes = [row for row in node_rows if row["sample_id"] in kept_ids]
     filtered_edges = [row for row in edge_rows if row["source"] in kept_ids and row["target"] in kept_ids]
     return filtered_nodes, filtered_edges
 
 
-def build_network_figure(node_rows: list[dict[str, str]], edge_rows: list[dict[str, str]]) -> go.Figure:
+def _graph_from_rows(
+    node_rows: Sequence[Mapping[str, Any]], edge_rows: Sequence[Mapping[str, Any]]
+) -> nx.Graph:
     graph = nx.Graph()
-    for row in node_rows:
-        graph.add_node(row["sample_id"], cluster_id=row["cluster_id"], cluster_size=int(row["cluster_size"]))
-    for row in edge_rows:
-        if row["source"] in graph and row["target"] in graph:
-            graph.add_edge(row["source"], row["target"], distance=float(row["distance"]))
+    # NetworkX arrays follow insertion order, so sort first for reproducibility.
+    for row in sorted(node_rows, key=lambda item: str(item["sample_id"])):
+        graph.add_node(str(row["sample_id"]), **dict(row))
+    valid_ids = set(graph)
+    valid_edges = [
+        row for row in edge_rows if str(row["source"]) in valid_ids and str(row["target"]) in valid_ids
+    ]
+    for row in sorted(
+        valid_edges,
+        key=lambda item: tuple(sorted((str(item["source"]), str(item["target"])))),
+    ):
+        graph.add_edge(str(row["source"]), str(row["target"]), distance=float(row["distance"]))
+    return graph
 
-    layout = nx.spring_layout(graph, seed=42, k=1 / max(len(graph), 1) ** 0.5)
+
+def _stable_seed(value: str, seed: int) -> int:
+    return int.from_bytes(hashlib.sha256(f"{seed}:{value}".encode()).digest()[:4], "big")
+
+
+def _normalized_component_layout(graph: nx.Graph, nodes: Sequence[str], seed: int) -> PositionMap:
+    ordered = sorted(nodes)
+    if len(ordered) == 1:
+        return {ordered[0]: (0.0, 0.0)}
+    raw = nx.spring_layout(
+        graph.subgraph(ordered),
+        seed=_stable_seed("|".join(ordered), seed),
+        k=1 / math.sqrt(len(ordered)),
+    )
+    extent = max(max(abs(float(point[0])), abs(float(point[1]))) for point in raw.values()) or 1.0
+    radius = min(1.35, 0.65 + 0.12 * math.sqrt(len(ordered)))
+    return {
+        node: (float(raw[node][0]) / extent * radius, float(raw[node][1]) / extent * radius)
+        for node in ordered
+    }
+
+
+def _display_value(value: Any) -> str:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return MISSING_VALUE
+    return str(value)
+
+
+def _category_sort_key(value: str) -> tuple[int, int | str]:
+    if value in AGE_RANGE_ORDER:
+        return (0, AGE_RANGE_ORDER.index(value))
+    if value == MISSING_VALUE:
+        return (2, value)
+    return (1, value.casefold())
+
+
+def compute_network_layout(
+    node_rows: Sequence[Mapping[str, Any]],
+    edge_rows: Sequence[Mapping[str, Any]],
+    *,
+    mode: LayoutMode = "spring",
+    group_by: str | None = None,
+    seed: int = 42,
+) -> PositionMap:
+    """Return deterministic positions that callers can cache and reuse.
+
+    ``spring`` preserves the original whole-graph behaviour. ``components`` (also
+    ``component_packed``) lays out connected components independently. Supplying a
+    field such as ``group_by='genotype'`` places component grids in group regions.
+    """
+    graph = _graph_from_rows(node_rows, edge_rows)
+    if not graph:
+        return {}
+    if mode == "spring":
+        raw = nx.spring_layout(graph, seed=seed, k=1 / math.sqrt(len(graph)))
+        return {node: (float(point[0]), float(point[1])) for node, point in raw.items()}
+    if mode not in ("components", "component_packed"):
+        raise ValueError(f"Unknown layout mode: {mode!r}")
+    if group_by is not None and any(group_by not in data for _, data in graph.nodes(data=True)):
+        raise ValueError(f"Cannot group layout by missing field {group_by!r}")
+
+    components = [tuple(sorted(component)) for component in nx.connected_components(graph)]
+    components.sort(key=lambda component: (-len(component), component))
+    grouped: dict[str, list[tuple[str, ...]]] = {}
+    for component in components:
+        if group_by is None:
+            label = ""
+        else:
+            values = sorted({_display_value(graph.nodes[node].get(group_by)) for node in component})
+            label = " / ".join(values)
+        grouped.setdefault(label, []).append(component)
+
+    positions: PositionMap = {}
+    group_offset_x = 0.0
+    for label in sorted(grouped, key=_category_sort_key):
+        group_components = grouped[label]
+        columns = max(1, math.ceil(math.sqrt(len(group_components))))
+        rows = math.ceil(len(group_components) / columns)
+        spacing = 3.4
+        for index, component in enumerate(group_components):
+            center_x = group_offset_x + (index % columns) * spacing
+            center_y = (rows - 1) * spacing / 2 - (index // columns) * spacing
+            for node, (x, y) in _normalized_component_layout(graph, component, seed).items():
+                positions[node] = (x + center_x, y + center_y)
+        group_offset_x += max(columns - 1, 0) * spacing + 5.5
+    return positions
+
+
+def ordered_categories(values: Iterable[Any]) -> tuple[str, ...]:
+    """Return unique display values with age bins and missing values ordered sensibly."""
+    return tuple(sorted({_display_value(value) for value in values}, key=_category_sort_key))
+
+
+def build_category_mapping(
+    values: Iterable[Any],
+    *,
+    channel: Literal["color", "symbol", "outline"] = "color",
+) -> dict[str, str]:
+    """Build an input-order-independent mapping suitable for reuse across plots."""
+    categories = ordered_categories(values)
+    if channel == "symbol":
+        return {value: _SYMBOLS[index % len(_SYMBOLS)] for index, value in enumerate(categories)}
+    palette = _OUTLINE_PALETTE if channel == "outline" else _PALETTE
+    # Sorted sequential assignment avoids hash collisions within a plot. To keep
+    # colours identical across filtered subsets, build once from the complete node
+    # table and pass the result through ``encoding_maps``.
+    nonmissing = [value for value in categories if value != MISSING_VALUE]
+    mapping = {value: palette[index % len(palette)] for index, value in enumerate(nonmissing)}
+    if MISSING_VALUE in categories:
+        mapping[MISSING_VALUE] = "#bdbdbd"
+    return mapping
+
+
+def _all_numeric(values: Sequence[str]) -> bool:
+    try:
+        return all(math.isfinite(float(value)) for value in values)
+    except ValueError:
+        return False
+
+
+def get_encoding_warnings(
+    node_rows: Sequence[Mapping[str, Any]],
+    *,
+    color_by: str | None = None,
+    symbol_by: str | None = None,
+    size_by: str | None = None,
+    outline_by: str | None = None,
+    size_order: Sequence[Any] | None = None,
+) -> list[str]:
+    """Describe encodings that are likely to be difficult to read."""
+    result: list[str] = []
+    for field, label, recommended_max in (
+        (color_by, "colour", 20), (symbol_by, "shape", 8), (outline_by, "outline", 8)
+    ):
+        if field:
+            count = len(ordered_categories(row.get(field) for row in node_rows))
+            if count > recommended_max:
+                result.append(
+                    f"{field!r} has {count} categories; {label} is clearest with "
+                    f"{recommended_max} or fewer"
+                )
+    if symbol_by:
+        count = len(ordered_categories(row.get(symbol_by) for row in node_rows))
+        if count > len(_SYMBOLS):
+            result.append(
+                f"{symbol_by!r} exceeds the {len(_SYMBOLS)} distinct marker shapes; "
+                "filter categories or choose another shape field"
+            )
+    if size_by:
+        values = [_display_value(row.get(size_by)) for row in node_rows]
+        nonmissing = [value for value in values if value != MISSING_VALUE]
+        is_age_range = all(value in AGE_RANGE_ORDER for value in nonmissing)
+        if nonmissing and not _all_numeric(nonmissing) and not is_age_range and size_order is None:
+            result.append(
+                f"{size_by!r} is categorical and has no inherent size order; provide size_order "
+                "or use it for colour/shape instead"
+            )
+    return result
+
+
+def _require_fields(node_rows: Sequence[Mapping[str, Any]], fields: Iterable[str | None]) -> None:
+    available = {field for row in node_rows for field in row}
+    missing = sorted({field for field in fields if field and field not in available})
+    if missing:
+        raise ValueError("Unknown node metadata field(s): " + ", ".join(missing))
+
+
+def _size_encoding(values: Sequence[str]) -> tuple[list[float], list[tuple[str, float]]]:
+    nonmissing = [value for value in values if value != MISSING_VALUE]
+    if not nonmissing:
+        return [8.0] * len(values), [(MISSING_VALUE, 8.0)]
+    if _all_numeric(nonmissing):
+        numeric = [float(value) for value in nonmissing]
+        low, high = min(numeric), max(numeric)
+
+        def numeric_size(value: str) -> float:
+            if value == MISSING_VALUE:
+                return 8.0
+            if low == high:
+                return 13.0
+            return 9.0 + (float(value) - low) / (high - low) * 10.0
+
+        sizes = [numeric_size(value) for value in values]
+        unique = sorted(set(numeric))
+        selected = unique if len(unique) <= 4 else [unique[0], unique[len(unique) // 2], unique[-1]]
+        legend = [(f"{value:g}", numeric_size(str(value))) for value in selected]
+        if MISSING_VALUE in values:
+            legend.append((MISSING_VALUE, 8.0))
+        return sizes, legend
+    categories = ordered_categories(values)
+    if all(category in AGE_RANGE_ORDER or category == MISSING_VALUE for category in categories):
+        mapping = {AGE_RANGE_ORDER[0]: 9.0, AGE_RANGE_ORDER[1]: 14.0, AGE_RANGE_ORDER[2]: 19.0}
+        mapping[MISSING_VALUE] = 8.0
+    else:
+        raise ValueError(
+            "Categorical node size requires an explicit order; use age_range, a numeric field, "
+            "or pass size_order"
+        )
+    return [mapping[value] for value in values], [(value, mapping[value]) for value in categories]
+
+
+def _ordered_size_encoding(
+    values: Sequence[str], size_order: Sequence[Any]
+) -> tuple[list[float], list[tuple[str, float]]]:
+    order = [_display_value(value) for value in size_order]
+    if len(order) != len(set(order)):
+        raise ValueError("size_order contains duplicate values")
+    present = set(values).difference({MISSING_VALUE})
+    missing = sorted(present.difference(order), key=_category_sort_key)
+    if missing:
+        raise ValueError("size_order does not include: " + ", ".join(missing))
+    ordered_present = [value for value in order if value in present]
+    mapping = {
+        value: 13.0 if len(ordered_present) == 1 else 9.0 + index / (len(ordered_present) - 1) * 10.0
+        for index, value in enumerate(ordered_present)
+    }
+    if MISSING_VALUE in values:
+        mapping[MISSING_VALUE] = 8.0
+    legend_order = ordered_present + ([MISSING_VALUE] if MISSING_VALUE in values else [])
+    return [mapping[value] for value in values], [(value, mapping[value]) for value in legend_order]
+
+
+def _supplied_encoding_map(
+    encoding_maps: Mapping[str, Mapping[str, str]], channel: str, field: str
+) -> Mapping[str, str] | None:
+    """Resolve a channel-qualified map, with field-only keys kept for compatibility."""
+    return encoding_maps.get(f"{channel}:{field}") or encoding_maps.get(field)
+
+
+def _legend_trace(
+    *, name: str, group: str, title: str, color: str = "#777777", symbol: str = "circle",
+    size: float = 11, line_color: str = "#333333", line_width: float = 1,
+) -> go.Scatter:
+    return go.Scatter(
+        x=[None], y=[None], mode="markers",
+        marker=dict(color=color, symbol=symbol, size=size, line=dict(color=line_color, width=line_width)),
+        name=name, legendgroup=group, legendgrouptitle_text=title,
+        hoverinfo="skip", showlegend=True,
+    )
+
+
+def build_network_figure(
+    node_rows: list[dict[str, Any]],
+    edge_rows: list[dict[str, Any]],
+    *,
+    positions: Mapping[str, Sequence[float]] | None = None,
+    layout_mode: LayoutMode = "spring",
+    group_by: str | None = None,
+    color_by: str | None = None,
+    symbol_by: str | None = None,
+    size_by: str | None = None,
+    outline_by: str | None = None,
+    hover_fields: Sequence[str] | None = None,
+    encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
+    size_order: Sequence[Any] | None = None,
+    height: int = 600,
+) -> go.Figure:
+    """Build an interactive, vector-safe network with independent metadata channels.
+
+    Defaults retain the original cluster-coloured look. Callers can cache the result
+    of :func:`compute_network_layout` and supply it as ``positions`` so restyling
+    metadata never moves nodes. IDs are hover-only because node mode is ``markers``.
+    Reusable maps should use keys such as ``color:location``, ``symbol:status`` and
+    ``outline:status``; unqualified field keys remain accepted for compatibility.
+    """
+    requested_hover = list(hover_fields) if hover_fields is not None else [
+        field for field in dict.fromkeys(field for row in node_rows for field in row)
+        if field not in {"sample_id", "cluster_id", "cluster_size"}
+    ]
+    _require_fields(node_rows, (color_by, symbol_by, size_by, outline_by, group_by, *requested_hover))
+    graph = _graph_from_rows(node_rows, edge_rows)
+    if positions is None:
+        layout = compute_network_layout(node_rows, edge_rows, mode=layout_mode, group_by=group_by)
+    else:
+        missing_positions = sorted(set(graph).difference(positions))
+        if missing_positions:
+            raise ValueError("Positions missing node(s): " + ", ".join(missing_positions))
+        layout = {node: (float(positions[node][0]), float(positions[node][1])) for node in graph}
 
     edge_x: list[float | None] = []
     edge_y: list[float | None] = []
@@ -35,41 +344,153 @@ def build_network_figure(node_rows: list[dict[str, str]], edge_rows: list[dict[s
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
     edge_trace = go.Scatter(
-        x=edge_x, y=edge_y, mode="lines", line=dict(width=1, color="#999999"), hoverinfo="none"
+        x=edge_x, y=edge_y, mode="lines", line=dict(width=1, color="#999999"),
+        hoverinfo="none", name="Network edges", showlegend=False,
     )
 
-    multi_cluster_ids = sorted(
-        {data["cluster_id"] for _, data in graph.nodes(data=True) if data["cluster_size"] > 1}
-    )
-    palette = plotly.colors.qualitative.Plotly
-    color_by_cluster = {cid: palette[i % len(palette)] for i, cid in enumerate(multi_cluster_ids)}
+    ordered_nodes = list(graph.nodes())
+    node_data = [graph.nodes[node] for node in ordered_nodes]
+    multi_cluster_ids = sorted({str(data["cluster_id"]) for data in node_data if int(data["cluster_size"]) > 1})
+    legacy_palette = plotly.colors.qualitative.Plotly
+    legacy_colors = {value: legacy_palette[index % len(legacy_palette)] for index, value in enumerate(multi_cluster_ids)}
+    supplied_maps = encoding_maps or {}
+    legends: list[go.Scatter] = []
 
-    node_x, node_y, node_color, node_size, node_text = [], [], [], [], []
-    for sample_id, data in graph.nodes(data=True):
-        x, y = layout[sample_id]
-        node_x.append(x)
-        node_y.append(y)
-        singleton = data["cluster_size"] == 1
-        node_color.append("#c7c7c7" if singleton else color_by_cluster[data["cluster_id"]])
-        node_size.append(8 if singleton else 13)
-        node_text.append(f"{sample_id}<br>cluster: {data['cluster_id']}<br>cluster size: {data['cluster_size']}")
+    if color_by:
+        values = [_display_value(data.get(color_by)) for data in node_data]
+        mapping = dict(
+            _supplied_encoding_map(supplied_maps, "color", color_by)
+            or build_category_mapping(values, channel="color")
+        )
+        unknown = sorted(set(values).difference(mapping))
+        if unknown:
+            raise ValueError(f"Colour map for {color_by!r} lacks: {', '.join(unknown)}")
+        node_colors = [mapping[value] for value in values]
+        legends += [
+            _legend_trace(name=value, group=f"color:{color_by}", title=f"Colour: {color_by}", color=mapping[value])
+            for value in ordered_categories(values)
+        ]
+    else:
+        node_colors = [
+            "#c7c7c7" if int(data["cluster_size"]) == 1 else legacy_colors[str(data["cluster_id"])]
+            for data in node_data
+        ]
+
+    if symbol_by:
+        values = [_display_value(data.get(symbol_by)) for data in node_data]
+        if len(set(values)) > len(_SYMBOLS):
+            raise ValueError(f"{symbol_by!r} has more than {len(_SYMBOLS)} categories and cannot be represented with distinct marker shapes")
+        mapping = dict(
+            _supplied_encoding_map(supplied_maps, "symbol", symbol_by)
+            or build_category_mapping(values, channel="symbol")
+        )
+        unknown = sorted(set(values).difference(mapping))
+        if unknown:
+            raise ValueError(f"Symbol map for {symbol_by!r} lacks: {', '.join(unknown)}")
+        node_symbols = [mapping[value] for value in values]
+        legends += [
+            _legend_trace(name=value, group=f"symbol:{symbol_by}", title=f"Shape: {symbol_by}", symbol=mapping[value])
+            for value in ordered_categories(values)
+        ]
+    else:
+        node_symbols = ["circle"] * len(node_data)
+
+    if size_by:
+        values = [_display_value(data.get(size_by)) for data in node_data]
+        node_sizes, size_legend = (
+            _ordered_size_encoding(values, size_order)
+            if size_order is not None
+            else _size_encoding(values)
+        )
+        legends += [
+            _legend_trace(name=label, group=f"size:{size_by}", title=f"Size: {size_by}", size=size)
+            for label, size in size_legend
+        ]
+    else:
+        node_sizes = [8.0 if int(data["cluster_size"]) == 1 else 13.0 for data in node_data]
+
+    if outline_by:
+        values = [_display_value(data.get(outline_by)) for data in node_data]
+        mapping = dict(
+            _supplied_encoding_map(supplied_maps, "outline", outline_by)
+            or build_category_mapping(values, channel="outline")
+        )
+        unknown = sorted(set(values).difference(mapping))
+        if unknown:
+            raise ValueError(f"Outline map for {outline_by!r} lacks: {', '.join(unknown)}")
+        outline_colors = [mapping[value] for value in values]
+        outline_widths = [2.5] * len(node_data)
+        legends += [
+            _legend_trace(name=value, group=f"outline:{outline_by}", title=f"Outline: {outline_by}", color="#ffffff", line_color=mapping[value], line_width=3)
+            for value in ordered_categories(values)
+        ]
+    else:
+        outline_colors = ["#333333"] * len(node_data)
+        outline_widths = [1.0] * len(node_data)
+
+    hover_text: list[str] = []
+    for sample_id, data in zip(ordered_nodes, node_data, strict=True):
+        lines = [f"<b>{html.escape(sample_id)}</b>"]
+        lines.append(f"cluster: {html.escape(_display_value(data.get('cluster_id')))}")
+        lines.append(f"cluster size: {html.escape(_display_value(data.get('cluster_size')))}")
+        for field in requested_hover:
+            lines.append(f"{html.escape(field)}: {html.escape(_display_value(data.get(field)))}")
+        hover_text.append("<br>".join(lines))
 
     node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
+        x=[layout[node][0] for node in ordered_nodes],
+        y=[layout[node][1] for node in ordered_nodes],
         mode="markers",
-        marker=dict(color=node_color, size=node_size, line=dict(width=1, color="#333333")),
-        text=node_text,
-        hoverinfo="text",
+        marker=dict(color=node_colors, size=node_sizes, symbol=node_symbols, line=dict(width=outline_widths, color=outline_colors)),
+        text=hover_text, hovertemplate="%{text}<extra></extra>", name="Samples", showlegend=False,
     )
-
-    fig = go.Figure(data=[edge_trace, node_trace])
+    warnings = get_encoding_warnings(
+        node_rows,
+        color_by=color_by,
+        symbol_by=symbol_by,
+        size_by=size_by,
+        outline_by=outline_by,
+        size_order=size_order,
+    )
+    annotations: list[dict[str, Any]] = []
+    if group_by:
+        grouped_nodes: dict[str, list[str]] = {}
+        for node, data in zip(ordered_nodes, node_data, strict=True):
+            grouped_nodes.setdefault(_display_value(data.get(group_by)), []).append(node)
+        for group_label in sorted(grouped_nodes, key=_category_sort_key):
+            group_nodes = grouped_nodes[group_label]
+            group_x = [layout[node][0] for node in group_nodes]
+            group_y = [layout[node][1] for node in group_nodes]
+            annotations.append(
+                {
+                    "x": (min(group_x) + max(group_x)) / 2,
+                    "y": max(group_y) + 0.55,
+                    "text": f"{html.escape(group_by)}: {html.escape(group_label)}",
+                    "showarrow": False,
+                    "font": {"size": 14},
+                }
+            )
+    fig = go.Figure(data=[edge_trace, node_trace, *legends])
     fig.update_layout(
-        showlegend=False,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=600,
+        showlegend=bool(legends), legend=dict(tracegroupgap=12),
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        margin=dict(l=10, r=10, t=10, b=10), height=height,
         plot_bgcolor="rgba(0,0,0,0)",
+        annotations=annotations,
+        meta={"encoding_warnings": warnings, "positions": {node: list(layout[node]) for node in ordered_nodes}},
     )
     return fig
+
+
+def export_figure_svg(figure: go.Figure, path: str | Path) -> Path:
+    """Export editable vector SVG, rejecting any embedded raster fallback."""
+    output_path = Path(path)
+    svg = figure.to_image(format="svg")
+    svg_bytes = svg.encode("utf-8") if isinstance(svg, str) else bytes(svg)
+    lowered = svg_bytes.lower()
+    if b"<svg" not in lowered:
+        raise ValueError("Plotly did not produce an SVG document")
+    if b"<image" in lowered or b"data:image/" in lowered:
+        raise ValueError("SVG export contains an embedded raster image")
+    output_path.write_bytes(svg_bytes)
+    return output_path

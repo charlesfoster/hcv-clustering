@@ -10,8 +10,10 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import assign_hcv_genotypes_from_fasta
+import hcv_cluster_metadata
 import hcv_cluster_prep
 import hcv_cluster_viz
 import hcv_workflow
@@ -221,30 +223,294 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+_PLOT_BUILTIN_FIELDS = frozenset(
+    {"sample_id", "genotype", "cluster_id", "source_cluster_id", "cluster_size"}
+)
+
+
+def _requested_plot_fields(args: argparse.Namespace) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            field
+            for field in (
+                args.plot_color_by,
+                args.plot_symbol_by,
+                args.plot_size_by,
+                args.plot_outline_by,
+                *(args.plot_hover_field or ()),
+            )
+            if field
+        )
+    )
+
+
+def _validate_plot_fields(
+    args: argparse.Namespace,
+    metadata_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    requested = set(_requested_plot_fields(args))
+    available = _PLOT_BUILTIN_FIELDS | set(hcv_cluster_metadata.metadata_fields(metadata_rows))
+    unknown = sorted(requested.difference(available))
+    if unknown:
+        available_text = ", ".join(sorted(available))
+        metadata_hint = " Supply the field in --metadata." if not metadata_rows else ""
+        raise ValueError(
+            f"Unknown plot metadata field(s): {', '.join(unknown)}. "
+            f"Available fields: {available_text}.{metadata_hint}"
+        )
+    if args.plot_size_order and not args.plot_size_by:
+        raise ValueError("--plot-size-order requires --plot-size-by")
+    if args.plot_size_order and len(args.plot_size_order) != len(set(args.plot_size_order)):
+        raise ValueError("--plot-size-order contains duplicate values")
+
+
+def _prepare_plot_rows(
+    clusters_csv: Path,
+    links_csv: Path,
+    *,
+    genotype: str | None,
+    hide_singletons: bool,
+    metadata_rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    node_rows: list[dict[str, Any]] = _read_csv_rows(clusters_csv)
+    edge_rows: list[dict[str, Any]] = _read_csv_rows(links_csv)
+    for row in node_rows:
+        if genotype is not None:
+            row.setdefault("genotype", genotype)
+            row.setdefault("source_cluster_id", row.get("cluster_id", ""))
+    if hide_singletons:
+        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+    if metadata_rows:
+        node_rows, _report = hcv_cluster_metadata.join_metadata(node_rows, metadata_rows)
+    return node_rows, edge_rows
+
+
 def _render_cluster_plot(
     plot_network: str,
     hide_singletons: bool,
-    genotype_dir: Path,
+    output_dir: Path,
     clusters_csv: Path,
     links_csv: Path,
     file_prefix: str,
+    *,
+    genotype: str | None = None,
+    metadata_rows: Sequence[Mapping[str, Any]] = (),
+    color_by: str | None = None,
+    symbol_by: str | None = None,
+    size_by: str | None = None,
+    size_order: Sequence[str] | None = None,
+    outline_by: str | None = None,
+    hover_fields: Sequence[str] | None = None,
+    combined_layout: str | None = None,
+    encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
 ) -> None:
     if plot_network == "none":
         return
-    node_rows = _read_csv_rows(clusters_csv)
-    edge_rows = _read_csv_rows(links_csv)
-    if hide_singletons:
-        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+    node_rows, edge_rows = _prepare_plot_rows(
+        clusters_csv,
+        links_csv,
+        genotype=genotype,
+        hide_singletons=hide_singletons,
+        metadata_rows=metadata_rows,
+    )
     if not node_rows:
         return
-    try:
-        fig = hcv_cluster_viz.build_network_figure(node_rows, edge_rows)
-        if plot_network in ("png", "both"):
-            fig.write_image(genotype_dir / f"{file_prefix}network.png", scale=2)
-        if plot_network in ("html", "both"):
-            fig.write_html(genotype_dir / f"{file_prefix}network.html", include_plotlyjs=True)
-    except Exception as exc:
-        print(f"WARNING: could not render network plot for {genotype_dir.name}: {exc}")
+    layout_mode = "component_packed" if combined_layout is not None else "spring"
+    group_by = "genotype" if combined_layout == "by-genotype" else None
+    requested_hover_list = [
+        field for field in (hover_fields or ()) if field != "sample_id"
+    ]
+    if combined_layout is not None and "genotype" not in requested_hover_list:
+        requested_hover_list.insert(0, "genotype")
+    requested_hover = tuple(requested_hover_list)
+    fig = hcv_cluster_viz.build_network_figure(
+        node_rows,
+        edge_rows,
+        layout_mode=layout_mode,
+        group_by=group_by,
+        color_by=color_by,
+        symbol_by=symbol_by,
+        size_by=size_by,
+        size_order=size_order,
+        outline_by=outline_by,
+        hover_fields=requested_hover,
+        encoding_maps=encoding_maps,
+    )
+    if plot_network in ("png", "both", "all"):
+        try:
+            fig.write_image(output_dir / f"{file_prefix}network.png", scale=2)
+        except Exception as exc:
+            print(f"WARNING: could not export PNG network plot for {output_dir.name}: {exc}")
+    if plot_network in ("html", "both", "all"):
+        try:
+            fig.write_html(output_dir / f"{file_prefix}network.html", include_plotlyjs=True)
+        except Exception as exc:
+            print(f"WARNING: could not export HTML network plot for {output_dir.name}: {exc}")
+    if plot_network in ("svg", "all"):
+        try:
+            hcv_cluster_viz.export_figure_svg(fig, output_dir / f"{file_prefix}network.svg")
+        except Exception as exc:
+            print(f"WARNING: could not export SVG network plot for {output_dir.name}: {exc}")
+
+
+def _summarize_ids(sample_ids: Sequence[str], limit: int = 5) -> str:
+    ordered = sorted(set(sample_ids))
+    displayed = ", ".join(ordered[:limit])
+    if len(ordered) > limit:
+        displayed += f", ... (+{len(ordered) - limit} more)"
+    return displayed
+
+
+def _warn_plot_metadata(
+    node_rows: Sequence[Mapping[str, Any]],
+    metadata_rows: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    if metadata_rows:
+        node_ids = {str(row["sample_id"]) for row in node_rows}
+        metadata_ids = {str(row["sample_id"]) for row in metadata_rows}
+        missing = sorted(node_ids.difference(metadata_ids))
+        unknown = sorted(metadata_ids.difference(node_ids))
+        if missing:
+            print(
+                f"WARNING: metadata is missing for {len(missing)} plotted sample(s): "
+                f"{_summarize_ids(missing)}",
+                file=sys.stderr,
+            )
+        if unknown:
+            print(
+                f"WARNING: metadata contains {len(unknown)} sample(s) not represented in "
+                f"the plotted networks: {_summarize_ids(unknown)}",
+                file=sys.stderr,
+            )
+    warnings = hcv_cluster_viz.get_encoding_warnings(
+        node_rows,
+        color_by=args.plot_color_by,
+        symbol_by=args.plot_symbol_by,
+        size_by=args.plot_size_by,
+        outline_by=args.plot_outline_by,
+        size_order=args.plot_size_order,
+    )
+    for warning in dict.fromkeys(warnings):
+        print(f"WARNING: {warning}", file=sys.stderr)
+
+
+def _validate_plot_encodings(
+    node_rows: Sequence[Mapping[str, Any]], args: argparse.Namespace
+) -> None:
+    warnings = hcv_cluster_viz.get_encoding_warnings(
+        node_rows,
+        color_by=args.plot_color_by,
+        symbol_by=args.plot_symbol_by,
+        size_by=args.plot_size_by,
+        outline_by=args.plot_outline_by,
+        size_order=args.plot_size_order,
+    )
+    unusable = [
+        warning
+        for warning in warnings
+        if "distinct marker shapes" in warning or "has no inherent size order" in warning
+    ]
+    if unusable:
+        raise ValueError("Invalid plot encoding: " + "; ".join(unusable))
+
+
+def _render_requested_plots(
+    args: argparse.Namespace,
+    outdir: Path,
+    metadata_rows: Sequence[Mapping[str, Any]],
+    cluster_tables: list[tuple[str, Path]],
+    link_tables: list[tuple[str, Path]],
+    snp_cluster_tables: list[tuple[str, Path]],
+    snp_link_tables: list[tuple[str, Path]],
+) -> None:
+    """Render requested per-genotype and/or combined plots from completed tables."""
+    if args.plot_network == "none":
+        return
+
+    metric_tables: list[
+        tuple[str, list[tuple[str, Path]], list[tuple[str, Path]], Path, Path]
+    ] = [("", cluster_tables, link_tables, outdir / "clusters.csv", outdir / "links.csv")]
+    if args.distance == "both":
+        metric_tables.append(
+            (
+                "snp_",
+                snp_cluster_tables,
+                snp_link_tables,
+                outdir / "clusters.snp.csv",
+                outdir / "links.snp.csv",
+            )
+        )
+
+    # Build mappings from the union of every plotted metric so categories keep the
+    # same colour/shape/outline as users switch plots.
+    union_by_sample: dict[str, dict[str, Any]] = {}
+    for _prefix, _clusters, _links, merged_clusters, merged_links in metric_tables:
+        metric_nodes, _metric_edges = _prepare_plot_rows(
+            merged_clusters,
+            merged_links,
+            genotype=None,
+            hide_singletons=args.plot_hide_singletons,
+            metadata_rows=metadata_rows,
+        )
+        for row in metric_nodes:
+            union_by_sample.setdefault(str(row["sample_id"]), row)
+    union_nodes = list(union_by_sample.values())
+    _validate_plot_encodings(union_nodes, args)
+    _warn_plot_metadata(union_nodes, metadata_rows, args)
+
+    encoding_maps: dict[str, Mapping[str, str]] = {}
+    for channel, field in (
+        ("color", args.plot_color_by),
+        ("symbol", args.plot_symbol_by),
+        ("outline", args.plot_outline_by),
+    ):
+        if field:
+            encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
+                (row.get(field) for row in union_nodes), channel=channel
+            )
+    effective_hover_fields = (
+        tuple(args.plot_hover_field)
+        if args.plot_hover_field is not None
+        else hcv_cluster_metadata.metadata_fields(metadata_rows)
+    )
+    render_options = {
+        "metadata_rows": metadata_rows,
+        "color_by": args.plot_color_by,
+        "symbol_by": args.plot_symbol_by,
+        "size_by": args.plot_size_by,
+        "size_order": args.plot_size_order,
+        "outline_by": args.plot_outline_by,
+        "hover_fields": effective_hover_fields,
+        "encoding_maps": encoding_maps,
+    }
+
+    for file_prefix, per_gt_clusters, per_gt_links, merged_clusters, merged_links in metric_tables:
+        if args.plot_scope in ("per-genotype", "both"):
+            links_by_genotype = dict(per_gt_links)
+            for genotype, clusters_path in per_gt_clusters:
+                genotype_dir = outdir / "by_genotype" / hcv_workflow.safe_genotype_name(genotype)
+                _render_cluster_plot(
+                    args.plot_network,
+                    args.plot_hide_singletons,
+                    genotype_dir,
+                    clusters_path,
+                    links_by_genotype[genotype],
+                    file_prefix,
+                    genotype=genotype,
+                    **render_options,
+                )
+        if args.plot_scope in ("combined", "both"):
+            _render_cluster_plot(
+                args.plot_network,
+                args.plot_hide_singletons,
+                outdir,
+                merged_clusters,
+                merged_links,
+                file_prefix,
+                combined_layout=args.plot_combined_layout,
+                **render_options,
+            )
 
 
 def command_run(args: argparse.Namespace) -> int:
@@ -252,6 +518,10 @@ def command_run(args: argparse.Namespace) -> int:
     input_path: Path = Path(args.input)
     genotype_fasta_dir = outdir / "genotype_fastas"
     genotype_csv = outdir / "genotypes.csv"
+    metadata_rows = (
+        hcv_cluster_metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
+    )
+    _validate_plot_fields(args, metadata_rows)
 
     if args.dry_run:
         genotype_argv_display = [
@@ -313,6 +583,8 @@ def command_run(args: argparse.Namespace) -> int:
         )
 
     outdir.mkdir(parents=True, exist_ok=True)
+    if args.metadata is not None:
+        hcv_cluster_metadata.write_metadata_csv(metadata_rows, outdir / "metadata.csv")
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
 
     # --- Genotyping ---
@@ -501,10 +773,6 @@ def command_run(args: argparse.Namespace) -> int:
                 f"{cl_st['n_multi']} cluster(s), {cl_st['singletons']} singleton(s), "
                 f"largest: {cl_st['largest']}"
             )
-            _render_cluster_plot(
-                args.plot_network, args.plot_hide_singletons, genotype_dir, clusters_csv, links_csv, ""
-            )
-
         if args.distance in ("snp", "both"):
             snp_threshold = resolve_threshold(args.region, args.threshold, distance="snp")
             snp_csv = genotype_dir / "snp.csv"
@@ -546,23 +814,27 @@ def command_run(args: argparse.Namespace) -> int:
                 f"largest: {snp_st['largest']}"
             )
             print(f"          {_snp_count_summary(snp_links)}")
-            snp_file_prefix = "" if args.distance == "snp" else "snp_"
-            _render_cluster_plot(
-                args.plot_network,
-                args.plot_hide_singletons,
-                genotype_dir,
-                snp_clusters_csv,
-                snp_links_csv,
-                snp_file_prefix,
-            )
-
         print()
 
-    hcv_workflow.merge_cluster_tables(cluster_tables, outdir / "clusters.csv")
-    hcv_workflow.merge_link_tables(link_tables, outdir / "links.csv")
+    primary_clusters_csv = outdir / "clusters.csv"
+    primary_links_csv = outdir / "links.csv"
+    hcv_workflow.merge_cluster_tables(cluster_tables, primary_clusters_csv)
+    hcv_workflow.merge_link_tables(link_tables, primary_links_csv)
     if args.distance == "both":
-        hcv_workflow.merge_cluster_tables(snp_cluster_tables, outdir / "clusters.snp.csv")
-        hcv_workflow.merge_link_tables(snp_link_tables, outdir / "links.snp.csv")
+        snp_clusters_csv = outdir / "clusters.snp.csv"
+        snp_links_csv = outdir / "links.snp.csv"
+        hcv_workflow.merge_cluster_tables(snp_cluster_tables, snp_clusters_csv)
+        hcv_workflow.merge_link_tables(snp_link_tables, snp_links_csv)
+
+    _render_requested_plots(
+        args,
+        outdir,
+        metadata_rows,
+        cluster_tables,
+        link_tables,
+        snp_cluster_tables,
+        snp_link_tables,
+    )
 
     print(f"Done. Results written to: {outdir}")
     return 0
@@ -621,6 +893,16 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         default=Path("results"),
         type=Path,
         help="Output directory (default: results)",
+    )
+    run_parser.add_argument(
+        "--metadata",
+        metavar="CSV",
+        type=Path,
+        default=None,
+        help=(
+            "Optional sample metadata CSV keyed by sample_id. Normalized metadata is "
+            "saved as metadata.csv in the results directory."
+        ),
     )
     run_parser.add_argument(
         "-t", "--threshold",
@@ -869,12 +1151,78 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--plot-network",
         metavar="CHOICE",
-        choices=("none", "png", "html", "both"),
+        choices=("none", "png", "html", "svg", "both", "all"),
         default="none",
         help=adv(
-            "Render a cluster network plot per genotype (and metric, if --distance both) "
-            "into by_genotype/<genotype>/. png: static image. html: interactive, opens in a "
-            "browser. both: write both. Default: none."
+            "Render cluster network plots. png: static image. html: interactive. svg: "
+            "editable vector image. both: PNG+HTML (backward compatible). all: PNG+HTML+SVG. "
+            "Default: none."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-scope",
+        metavar="CHOICE",
+        choices=("per-genotype", "combined", "both"),
+        default="per-genotype",
+        help=adv(
+            "Plot each genotype separately (default), all genotypes in one presentation-only "
+            "network, or both. Combined plots never add cross-genotype links."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-combined-layout",
+        metavar="CHOICE",
+        choices=("packed", "by-genotype"),
+        default="packed",
+        help=adv(
+            "Combined-network layout: compact connected-component packing (default), or "
+            "spatially group packed components by genotype."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-color-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Metadata field encoded as node colour"),
+    )
+    run_parser.add_argument(
+        "--plot-symbol-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as node shape"),
+    )
+    run_parser.add_argument(
+        "--plot-size-by",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Numeric or intrinsically ordered metadata field encoded as node size; use "
+            "--plot-size-order for other categorical fields"
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-size-order",
+        action="append",
+        metavar="VALUE",
+        default=None,
+        help=adv(
+            "Category order from smallest to largest for --plot-size-by; repeat once per value"
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-outline-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as node outline colour"),
+    )
+    run_parser.add_argument(
+        "--plot-hover-field",
+        action="append",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Metadata field included in interactive hover text; repeat for multiple fields. "
+            "Defaults to all supplied metadata; sample_id is always included."
         ),
     )
     run_parser.add_argument(

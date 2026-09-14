@@ -5,17 +5,22 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 import io
+import math
 import os
 import signal
+import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
 import assign_hcv_genotypes_from_fasta
 import hcv_cluster
+import hcv_cluster_metadata
 import hcv_cluster_prep
 import hcv_cluster_viz
 
@@ -63,6 +68,148 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _validate_metadata_upload(data: bytes) -> list[dict[str, Any]]:
+    """Validate uploaded CSV bytes without writing into the selected result directory."""
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise hcv_cluster_metadata.MetadataValidationError(
+            "Metadata CSV must be UTF-8 encoded"
+        ) from exc
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        original_fields = reader.fieldnames
+        if original_fields is None:
+            raise hcv_cluster_metadata.MetadataValidationError("Metadata CSV has no header row")
+        cleaned_fields = [field.strip() for field in original_fields]
+        source_rows = []
+        for row_number, row in enumerate(reader, start=2):
+            if None in row:
+                raise hcv_cluster_metadata.MetadataValidationError(
+                    f"Metadata row {row_number} has more values than the header"
+                )
+            source_rows.append(
+                {
+                    cleaned: row.get(original)
+                    for original, cleaned in zip(original_fields, cleaned_fields, strict=True)
+                }
+            )
+    except csv.Error as exc:
+        raise hcv_cluster_metadata.MetadataValidationError(
+            f"Could not parse metadata CSV: {exc}"
+        ) from exc
+    return hcv_cluster_metadata.normalize_metadata_rows(
+        source_rows, fieldnames=cleaned_fields
+    )
+
+
+def _scope_metric_file_paths(
+    outdir: Path, scope: str, distance: str, metric: str
+) -> tuple[Path, Path]:
+    """Resolve result files for either the merged graph or a genotype graph."""
+    if scope == "All genotypes":
+        if distance == "both" and metric == "snp":
+            return outdir / "links.snp.csv", outdir / "clusters.snp.csv"
+        return outdir / "links.csv", outdir / "clusters.csv"
+    return _metric_file_paths(outdir / "by_genotype" / scope, distance, metric)
+
+
+def _network_fingerprint(
+    node_rows: list[dict[str, Any]], edge_rows: list[dict[str, Any]]
+) -> str:
+    """Identify graph topology for the session layout cache."""
+    digest = hashlib.sha256()
+    for row in sorted(node_rows, key=lambda item: str(item["sample_id"])):
+        sample_id = str(row["sample_id"])
+        genotype = str(row.get("genotype", ""))
+        digest.update(f"n\0{sample_id}\0{genotype}\n".encode())
+    for source, target in sorted(
+        tuple(sorted((str(row["source"]), str(row["target"])))) for row in edge_rows
+    ):
+        digest.update(f"e\0{source}\0{target}\n".encode())
+    return digest.hexdigest()
+
+
+def _metadata_display_fields(node_rows: list[dict[str, Any]]) -> list[str]:
+    excluded = {"sample_id", "cluster_id", "cluster_size", "source_cluster_id"}
+    return [
+        field
+        for field in dict.fromkeys(field for row in node_rows for field in row)
+        if field not in excluded
+    ]
+
+
+def _size_display_fields(
+    fields: list[str], node_rows: list[dict[str, Any]]
+) -> list[str]:
+    """Return fields the renderer can size without an explicit category order."""
+    result: list[str] = []
+    for field in fields:
+        values = [
+            str(row.get(field, "")).strip()
+            for row in node_rows
+            if str(row.get(field, "")).strip()
+            not in {"", hcv_cluster_metadata.MISSING_VALUE}
+        ]
+        if field.casefold().replace(" ", "_") == "age_range":
+            result.append(field)
+            continue
+        try:
+            if values and all(math.isfinite(float(value)) for value in values):
+                result.append(field)
+        except ValueError:
+            pass
+    return result
+
+
+def _epidemiology_defaults(
+    fields: list[str], node_rows: list[dict[str, Any]]
+) -> dict[str, str | None]:
+    """Choose conservative defaults only when the user requests the preset."""
+    lowered = {field.casefold(): field for field in fields}
+    ordered_size_fields = set(_size_display_fields(fields, node_rows))
+
+    def first_named(*names: str) -> str | None:
+        return next((lowered[name] for name in names if name in lowered), None)
+
+    def low_cardinality(excluding: set[str]) -> str | None:
+        for field in fields:
+            if field in ordered_size_fields:
+                continue
+            values = {
+                str(row.get(field) or hcv_cluster_metadata.MISSING_VALUE)
+                for row in node_rows
+            }
+            values.discard(hcv_cluster_metadata.MISSING_VALUE)
+            if field not in excluding and 1 < len(values) <= 8:
+                return field
+        return None
+
+    color = first_named("location", "prison", "facility", "subtype", "genotype")
+    shape = first_named("injecting_status", "injecting status", "indigenous_status", "indigenous status")
+    if shape == color:
+        shape = None
+    shape = shape or low_cardinality({color} if color else set())
+    size = first_named("age_range", "age range", "age")
+    outline = first_named("indigenous_status", "indigenous status", "injecting_status", "injecting status")
+    if outline in {color, shape}:
+        outline = low_cardinality({value for value in (color, shape) if value})
+    return {"color": color, "symbol": shape, "size": size, "outline": outline}
+
+
+def _safe_plot_filename(value: str) -> str:
+    cleaned = "".join(character if character.isalnum() or character in "-_" else "_" for character in value)
+    return cleaned.strip("_") or "network"
+
+
+def _figure_svg_bytes(figure: Any) -> bytes:
+    """Use the shared vector-safety check and return data for Streamlit download."""
+    with tempfile.TemporaryDirectory(prefix="hcv-cluster-svg-") as temp_dir:
+        svg_path = Path(temp_dir) / "network.svg"
+        hcv_cluster_viz.export_figure_svg(figure, svg_path)
+        return svg_path.read_bytes()
+
+
 def _metric_file_paths(genotype_dir: Path, distance: str, metric: str) -> tuple[Path, Path]:
     if distance == "both" and metric == "snp":
         return genotype_dir / "snp_links.csv", genotype_dir / "snp_clusters.csv"
@@ -87,7 +234,33 @@ def _show_cluster_table(title: str, path: Path) -> None:
 def _run_tab() -> None:
     st.header("Run clustering")
 
-    uploaded = st.file_uploader("Input multi-FASTA of HCV consensus sequences", type=["fasta", "fa", "fna"])
+    upload_col, metadata_col = st.columns(2)
+    with upload_col:
+        uploaded = st.file_uploader(
+            "Input multi-FASTA of HCV consensus sequences", type=["fasta", "fa", "fna"]
+        )
+    with metadata_col:
+        uploaded_metadata = st.file_uploader(
+            "Optional sample metadata CSV",
+            type=["csv"],
+            help=(
+                "Requires a sample_id column matching FASTA identifiers. Other columns "
+                "are available for colour, shape, size, outline, and hover."
+            ),
+        )
+    metadata_error: str | None = None
+    if uploaded_metadata is not None:
+        try:
+            metadata_preview = _validate_metadata_upload(uploaded_metadata.getvalue())
+        except hcv_cluster_metadata.MetadataValidationError as exc:
+            metadata_error = str(exc)
+            st.error(f"Metadata CSV is not valid: {metadata_error}")
+        else:
+            metadata_fields = hcv_cluster_metadata.metadata_fields(metadata_preview)
+            st.success(
+                f"Metadata ready: {len(metadata_preview)} sample(s), "
+                f"{len(metadata_fields)} field(s)."
+            )
     outdir = Path(st.text_input("Output directory", value="results_gui"))
 
     region, region_error = _region_picker()
@@ -286,7 +459,9 @@ def _run_tab() -> None:
         )
 
     run_clicked = st.button(
-        "Run pipeline", type="primary", disabled=uploaded is None or region_error is not None
+        "Run pipeline",
+        type="primary",
+        disabled=uploaded is None or region_error is not None or metadata_error is not None,
     )
 
     if run_clicked:
@@ -294,10 +469,16 @@ def _run_tab() -> None:
             st.error("Upload an input FASTA first.")
         elif region_error is not None:
             st.error(region_error)
+        elif metadata_error is not None:
+            st.error(f"Correct the metadata CSV before running: {metadata_error}")
         else:
             outdir.mkdir(parents=True, exist_ok=True)
             input_path = outdir / "input.fasta"
             input_path.write_bytes(uploaded.getvalue())
+            metadata_path = None
+            if uploaded_metadata is not None:
+                metadata_path = outdir / "input_metadata.csv"
+                metadata_path.write_bytes(uploaded_metadata.getvalue())
 
             genotype_filter = [g.strip() for g in genotype_filter_raw.split(",") if g.strip()] or None
 
@@ -341,6 +522,8 @@ def _run_tab() -> None:
                 argv.extend(["--snp-count-threshold", str(snp_count_threshold)])
             if keep_paf:
                 argv.append("--keep-paf")
+            if metadata_path is not None:
+                argv.extend(["--metadata", str(metadata_path)])
 
             parser = hcv_cluster.build_parser()
             args = parser.parse_args(argv)
@@ -380,13 +563,24 @@ def _render_results(outdir: Path, distance: str) -> None:
 
     by_genotype_dir = outdir / "by_genotype"
     genotypes = sorted(p.name for p in by_genotype_dir.iterdir() if p.is_dir()) if by_genotype_dir.exists() else []
-    if not genotypes:
+    has_merged_network = (outdir / "clusters.csv").exists() and (outdir / "links.csv").exists()
+    # Preserve the original genotype-first GUI experience while making the merged
+    # presentation available from the same selector.
+    scopes = genotypes + (["All genotypes"] if has_merged_network else [])
+    if not scopes:
         return
 
     st.subheader("Cluster network")
-    col_genotype, col_metric = st.columns(2)
-    with col_genotype:
-        selected_genotype = st.selectbox("Genotype", genotypes, key="view_genotype")
+    st.caption(
+        "The all-genotype view combines already-computed networks for presentation only. "
+        "Clustering and genetic-distance comparisons remain genotype-stratified; no "
+        "cross-genotype links are created."
+    )
+    col_scope, col_metric = st.columns(2)
+    with col_scope:
+        if st.session_state.get("view_scope") not in scopes:
+            st.session_state.view_scope = scopes[0]
+        selected_scope = st.selectbox("Network scope", scopes, key="view_scope")
     with col_metric:
         if distance == "both":
             metric = st.selectbox("Distance metric", ("tn93", "snp"), key="view_metric")
@@ -394,28 +588,77 @@ def _render_results(outdir: Path, distance: str) -> None:
             metric = distance
             st.write(f"Distance metric: **{metric.upper()}**")
 
-    if st.button("View Clusters"):
+    selected_layout = "Spring layout"
+    if selected_scope == "All genotypes":
+        selected_layout = st.selectbox(
+            "Combined layout",
+            ("Packed clusters", "Grouped by genotype"),
+            help=(
+                "Both options lay out each connected cluster independently. Grouped mode "
+                "places genotype networks in separate spatial regions."
+            ),
+            key="view_combined_layout",
+        )
+
+    if st.button("View / update network"):
         st.session_state.cluster_view = {
             "outdir": str(outdir),
-            "genotype": selected_genotype,
+            "scope": selected_scope,
             "metric": metric,
+            "layout": selected_layout,
         }
 
     view = st.session_state.get("cluster_view")
     if not view or view["outdir"] != str(outdir):
         return
 
-    genotype_dir = by_genotype_dir / view["genotype"]
-    links_path, clusters_path = _metric_file_paths(genotype_dir, distance, view["metric"])
+    # Old Streamlit sessions may still contain the pre-metadata genotype-only state.
+    scope = view.get("scope", view.get("genotype"))
+    if scope not in scopes:
+        st.info("Choose an available network scope and click View / update network.")
+        return
+    layout_label = view.get("layout", "Spring layout")
+    links_path, clusters_path = _scope_metric_file_paths(outdir, scope, distance, view["metric"])
     if not (links_path.exists() and clusters_path.exists()):
-        st.error(f"No {view['metric'].upper()} result files found for genotype {view['genotype']}.")
+        st.error(f"No {view['metric'].upper()} result files found for {scope}.")
         return
 
     node_rows = _read_csv_rows(clusters_path)
     edge_rows = _read_csv_rows(links_path)
     if not node_rows:
-        st.info("No sequences passed QC for this genotype.")
+        st.info("No sequences passed QC for this network scope.")
         return
+
+    if scope != "All genotypes":
+        for row in node_rows:
+            row.setdefault("genotype", scope)
+
+    metadata_rows: list[dict[str, Any]] = []
+    metadata_path = outdir / "metadata.csv"
+    if metadata_path.exists():
+        try:
+            metadata_rows = hcv_cluster_metadata.load_metadata_csv(metadata_path)
+            node_rows, join_report = hcv_cluster_metadata.join_metadata(node_rows, metadata_rows)
+        except hcv_cluster_metadata.MetadataValidationError as exc:
+            st.error(
+                f"Could not apply saved metadata ({metadata_path}): {exc}. "
+                "Correct the source CSV and rerun clustering."
+            )
+            return
+        if join_report.missing_metadata_sample_ids:
+            preview = ", ".join(join_report.missing_metadata_sample_ids[:8])
+            suffix = "…" if len(join_report.missing_metadata_sample_ids) > 8 else ""
+            st.warning(
+                f"{len(join_report.missing_metadata_sample_ids)} plotted sample(s) have no "
+                f"metadata and are shown as {hcv_cluster_metadata.MISSING_VALUE}: {preview}{suffix}"
+            )
+        if scope == "All genotypes" and join_report.unknown_metadata_sample_ids:
+            preview = ", ".join(join_report.unknown_metadata_sample_ids[:8])
+            suffix = "…" if len(join_report.unknown_metadata_sample_ids) > 8 else ""
+            st.info(
+                f"{len(join_report.unknown_metadata_sample_ids)} metadata sample(s) are not "
+                f"in this plotted result (for example, they may have failed QC): {preview}{suffix}"
+            )
 
     n_multi = len({row["cluster_id"] for row in node_rows if int(row["cluster_size"]) > 1})
     n_singleton = sum(1 for row in node_rows if int(row["cluster_size"]) == 1)
@@ -425,27 +668,205 @@ def _render_results(outdir: Path, distance: str) -> None:
         hcv_cluster_viz.filter_singletons(node_rows, edge_rows) if hide_singletons else (node_rows, edge_rows)
     )
     if not plot_node_rows:
-        st.info("No multi-member clusters for this genotype/metric.")
+        st.info("No multi-member clusters for this scope/metric.")
         return
 
+    fields = _metadata_display_fields(plot_node_rows)
+    st.markdown("#### Node appearance and hover")
+    preset_col, reset_col, preset_help_col = st.columns([1, 1, 2])
+    with preset_col:
+        apply_epidemiology = st.button(
+            "Apply epidemiology view",
+            help="Choose sensible available metadata fields across several visual channels.",
+        )
+    with reset_col:
+        reset_cluster = st.button(
+            "Reset to cluster view",
+            help="Restore cluster colours and remove all other node encodings.",
+        )
+    with preset_help_col:
+        st.caption(
+            "You can then change any dropdown independently. These controls only restyle "
+            "the cached graph; they do not rerun clustering or move nodes."
+        )
+
+    size_fields = _size_display_fields(fields, plot_node_rows)
+    channel_keys = {
+        "color": "network_color_by",
+        "symbol": "network_symbol_by",
+        "size": "network_size_by",
+        "outline": "network_outline_by",
+    }
+    if reset_cluster:
+        for key in channel_keys.values():
+            st.session_state[key] = None
+    elif apply_epidemiology:
+        defaults = _epidemiology_defaults(fields, plot_node_rows)
+        for channel, key in channel_keys.items():
+            st.session_state[key] = defaults[channel]
+    for channel, key in channel_keys.items():
+        options = size_fields if channel == "size" else fields
+        if st.session_state.get(key) not in [None, *options]:
+            st.session_state[key] = None
+
+    appearance_columns = st.columns(4)
+    with appearance_columns[0]:
+        color_by = st.selectbox(
+            "Node colour",
+            [None, *fields],
+            format_func=lambda value: "Cluster (default)" if value is None else value,
+            key=channel_keys["color"],
+        )
+    with appearance_columns[1]:
+        symbol_by = st.selectbox(
+            "Node shape",
+            [None, *fields],
+            format_func=lambda value: "None" if value is None else value,
+            key=channel_keys["symbol"],
+        )
+    with appearance_columns[2]:
+        size_by = st.selectbox(
+            "Node size",
+            [None, *size_fields],
+            format_func=lambda value: "None" if value is None else value,
+            key=channel_keys["size"],
+            help="Numeric fields and age_range are available for meaningful ordered sizes.",
+        )
+    with appearance_columns[3]:
+        outline_by = st.selectbox(
+            "Node outline",
+            [None, *fields],
+            format_func=lambda value: "None" if value is None else value,
+            key=channel_keys["outline"],
+        )
+
+    hover_key = "network_hover_fields"
+    if hover_key not in st.session_state:
+        st.session_state[hover_key] = fields.copy()
+    else:
+        st.session_state[hover_key] = [
+            field for field in st.session_state[hover_key] if field in fields
+        ]
+    hover_fields = st.multiselect(
+        "Additional hover fields",
+        fields,
+        key=hover_key,
+        help="Sample ID, cluster ID, and cluster size are always included.",
+    )
+
+    for warning in hcv_cluster_viz.get_encoding_warnings(
+        plot_node_rows,
+        color_by=color_by,
+        symbol_by=symbol_by,
+        size_by=size_by,
+        outline_by=outline_by,
+    ):
+        st.warning(warning)
+
+    # Build maps from the complete saved metadata/root-node universe, not only the
+    # currently selected genotype. This keeps (for example) Prison A the same colour
+    # while users switch repeatedly between combined and per-genotype views.
+    metadata_field_names = set(hcv_cluster_metadata.metadata_fields(metadata_rows))
+    all_genotype_rows = (
+        _read_csv_rows(outdir / "clusters.csv")
+        if (outdir / "clusters.csv").exists()
+        else []
+    )
+    encoding_maps: dict[str, dict[str, str]] = {}
+    for channel, field in (
+        ("color", color_by),
+        ("symbol", symbol_by),
+        ("outline", outline_by),
+    ):
+        if field is None:
+            continue
+        values = [row.get(field) for row in plot_node_rows]
+        if field in metadata_field_names:
+            values.extend(row.get(field) for row in metadata_rows)
+        if field == "genotype":
+            values.extend(row.get("genotype") for row in all_genotype_rows)
+        encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
+            values, channel=channel
+        )
+
+    if scope == "All genotypes":
+        layout_mode = "components"
+        group_by = "genotype" if layout_label == "Grouped by genotype" else None
+    else:
+        layout_mode = "spring"
+        group_by = None
+    cache_key = (
+        str(outdir.resolve()),
+        scope,
+        view["metric"],
+        layout_label,
+        hide_singletons,
+        _network_fingerprint(plot_node_rows, plot_edge_rows),
+    )
+    layout_cache = st.session_state.setdefault("network_layout_cache", {})
+    if cache_key not in layout_cache:
+        layout_cache[cache_key] = hcv_cluster_viz.compute_network_layout(
+            plot_node_rows,
+            plot_edge_rows,
+            mode=layout_mode,
+            group_by=group_by,
+        )
+        # Avoid retaining layouts for an unbounded number of result directories.
+        if len(layout_cache) > 24:
+            oldest_key = next(iter(layout_cache))
+            if oldest_key != cache_key:
+                layout_cache.pop(oldest_key)
+
     with st.spinner("Building network..."):
-        fig = hcv_cluster_viz.build_network_figure(plot_node_rows, plot_edge_rows)
+        try:
+            fig = hcv_cluster_viz.build_network_figure(
+                plot_node_rows,
+                plot_edge_rows,
+                positions=layout_cache[cache_key],
+                group_by=group_by,
+                color_by=color_by,
+                symbol_by=symbol_by,
+                size_by=size_by,
+                outline_by=outline_by,
+                hover_fields=hover_fields,
+                encoding_maps=encoding_maps,
+            )
+        except ValueError as exc:
+            st.error(f"Cannot apply the selected network appearance: {exc}")
+            return
     st.plotly_chart(fig, width="stretch")
 
+    scope_filename = "all_genotypes" if scope == "All genotypes" else scope
+    filename_base = _safe_plot_filename(f"{scope_filename}_{view['metric']}_network")
+    download_columns = st.columns(2)
     try:
         png_bytes = fig.to_image(format="png", scale=2)
     except Exception as exc:
         st.caption(f"PNG export unavailable ({exc}); use the camera icon in the plot toolbar instead.")
     else:
-        st.download_button(
-            "Save image (PNG)",
-            data=png_bytes,
-            file_name=f"{view['genotype']}_{view['metric']}_network.png",
-            mime="image/png",
-        )
+        with download_columns[0]:
+            st.download_button(
+                "Save image (PNG)",
+                data=png_bytes,
+                file_name=f"{filename_base}.png",
+                mime="image/png",
+            )
+    try:
+        svg_bytes = _figure_svg_bytes(fig)
+    except Exception as exc:
+        st.caption(f"SVG export unavailable ({exc}).")
+    else:
+        with download_columns[1]:
+            st.download_button(
+                "Save editable vector (SVG)",
+                data=svg_bytes,
+                file_name=f"{filename_base}.svg",
+                mime="image/svg+xml",
+            )
 
+    scope_label = "All genotypes" if scope == "All genotypes" else f"Genotype {scope}"
     st.caption(
-        f"Genotype {view['genotype']} ({view['metric'].upper()}): "
+        f"{scope_label} ({view['metric'].upper()}): "
         f"{len(node_rows)} sequence(s), {n_multi} cluster(s), {n_singleton} singleton(s)"
     )
 

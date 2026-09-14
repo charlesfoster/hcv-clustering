@@ -152,7 +152,48 @@ To also save cluster network plots (per genotype, and per metric if `--distance 
 pixi run hcv-cluster run -i samples.fasta --plot-network png --plot-hide-singletons
 ```
 
-`--plot-network` accepts `png` (static image), `html` (interactive, opens in a browser, works offline), or `both`. Files are written alongside each genotype's other outputs as `by_genotype/<genotype>/network.png`/`.html` (and `snp_network.*` for the SNP metric under `--distance both`). `--plot-hide-singletons` restricts plots to sequences that fall in a multi-member cluster.
+`--plot-network` accepts `png` (static image), `html` (interactive, opens in a browser and works offline), `svg` (editable vector image), `both` (PNG + HTML, retained for backward compatibility), or `all` (PNG + HTML + SVG). Per-genotype files are written alongside the other outputs as `by_genotype/<genotype>/network.*` (and `snp_network.*` for the SNP metric under `--distance both`). `--plot-hide-singletons` restricts plots to sequences that fall in a multi-member cluster.
+
+Plot scope is independent of the file format:
+
+```bash
+# Keep the default per-genotype plots and also create one combined plot.
+pixi run hcv-cluster run -i samples.fasta \
+  --plot-network all \
+  --plot-scope both \
+  --plot-combined-layout by-genotype
+```
+
+`--plot-scope` accepts `per-genotype` (the default), `combined`, or `both`. A combined plot is a **presentation-only union** of the genotype networks: distances and clusters are still calculated separately within each genotype, and the workflow never creates cross-genotype links. `--plot-combined-layout packed` packs disconnected clusters together; `by-genotype` places those packed clusters in genotype-specific regions.
+
+### Sample metadata and plot appearance
+
+Supply an optional UTF-8 CSV keyed by the exact FASTA sample identifier:
+
+```csv
+sample_id,age,location,indigenous_status,injecting_status,subtype
+sample_001,27,Prison A,yes,current,1a
+sample_002,44,Prison B,no,former,1a
+sample_003,68,Prison A,yes,never,3a
+```
+
+```bash
+pixi run hcv-cluster run -i samples.fasta \
+  --metadata sample_metadata.csv \
+  --plot-network all \
+  --plot-scope both \
+  --plot-color-by location \
+  --plot-symbol-by injecting_status \
+  --plot-size-by age_range \
+  --plot-outline-by indigenous_status \
+  --plot-hover-field subtype
+```
+
+`sample_id` is required, must be unique, and must match FASTA identifiers. All other columns are retained as arbitrary plotting metadata, so future fields do not require a schema change. Blank values and plotted samples without a metadata row appear as `(missing)`; rows that do not appear in the plotted results are reported. Duplicate/blank identifiers, malformed ages, invalid headers, and reserved clustering-output column names are rejected with an actionable error. Metadata changes presentation only and cannot change distances, links, or cluster membership. A normalized copy is saved as `metadata.csv` in the result directory for later GUI rendering.
+
+When an `age` column is supplied, the workflow validates it as a non-negative whole number and derives the ordered `age_range` categories `0–30`, `31–60`, and `61+`. You may instead supply `age_range` directly; both ASCII forms (`0-30`, `31-60`) and en-dash forms are accepted and normalized. If both columns are present, they must agree.
+
+Colour, shape, size, and outline are independent channels and can be used simultaneously. `--plot-color-by`, `--plot-symbol-by`, `--plot-size-by`, and `--plot-outline-by` each accept a metadata field; `genotype` is also available. Shape and outline work best for a small number of categories. Size accepts numeric or intrinsically ordered data such as `age_range`; for another categorical field, repeat `--plot-size-order VALUE` from smallest to largest. Repeat `--plot-hover-field FIELD` to select several hover fields. Sample ID and cluster details are always included in interactive hover text, while static PNG/SVG files deliberately do not draw sample-name labels.
 
 ### GUI
 
@@ -164,7 +205,13 @@ pixi run hcv-cluster-gui
 
 This opens a browser tab where you can upload an input FASTA, set the common options (threshold, distance metric, region, threads), cache reference sequences, and browse/download the resulting cluster tables. It calls the same code as `hcv-cluster` — nothing is duplicated or reimplemented, so both stay in sync automatically.
 
-After a run, pick a genotype (and metric, if `--distance both`) and click **View Clusters** to render an interactive network plot of that genotype's clustering result — nodes are sequences, edges are within-threshold pairs, coloured by cluster (singletons in grey). Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster, and use **Save image (PNG)** to download the current plot. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
+The FASTA uploader has an optional metadata CSV uploader beside it. The GUI validates the metadata before the run and uses the same `--metadata` pipeline path as the CLI.
+
+After a run, choose **All genotypes** or an individual genotype (and a metric, if `--distance both`) and click **View / update network**. The all-genotype view can either pack all disconnected clusters together or group them spatially by genotype. This toggle changes only the display: clustering remains genotype-stratified and there are no cross-genotype distance comparisons or links.
+
+The displayed metadata can then be changed repeatedly without rerunning clustering. Independent dropdowns map fields to node colour, shape, size, and outline, so several metadata types can be visible at once; additional fields can be selected for hover. **Apply epidemiology view** chooses conservative suggestions from the available fields, while **Reset to cluster view** restores the familiar cluster colours. Sample ID and cluster details always remain in hover. Layout positions are cached for the selected graph, layout, and singleton setting, so changing metadata does not make nodes jump around. High-cardinality encodings produce readability warnings rather than silently changing the data.
+
+Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
 
 ---
 

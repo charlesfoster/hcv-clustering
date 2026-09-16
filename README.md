@@ -349,8 +349,12 @@ Genotype query coverage is calculated after combining compatible, non-overlappin
 collinear minimap2 segments to the same reference. This allows genomes interrupted
 by internal runs of `N` to retain the coverage contributed by both flanks. Segments
 on different strands, overlapping query spans, rearranged target spans, or strongly
-discordant query/target gaps are not combined. `genotypes.csv` records the number of
-combined segments in `alignment_segment_count`.
+discordant query/target gaps are not combined. Genotype assignment uses the
+highest-scoring reference. Coverage QC then uses the broadest compatible passing
+alignment to a reference of that winning genotype, recorded in `coverage_ref`.
+`genotypes.csv` also records the number of combined segments in
+`alignment_segment_count`, plus the input sequence's `non_n_bases` and
+`non_n_fraction` so sequence completeness is distinct from alignment coverage.
 
 **Prepare a genotype-specific clustering FASTA:**
 

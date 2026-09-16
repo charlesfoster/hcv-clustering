@@ -94,8 +94,55 @@ def test_split_alignment_passes_query_coverage_after_aggregation(tmp_path: Path)
     assert row["assignment_status"] == "pass"
     assert row["assigned_genotype"] == "3a"
     assert row["qc_fail_reason"] == ""
+    assert row["best_ref"] == "3a_D17763.1"
+    assert row["coverage_ref"] == "3a_D17763.1"
     assert row["query_coverage"] == "0.558659"
     assert row["alignment_segment_count"] == 2
+    assert row["non_n_bases"] == 0
+    assert row["non_n_fraction"] == "0.000000"
+
+
+def test_coverage_qc_uses_broadest_passing_reference_within_winning_genotype(tmp_path: Path) -> None:
+    paf = tmp_path / "multiple_3a_refs.paf"
+    paf.write_text(
+        "\n".join(
+            [
+                # D17763 wins genotype assignment by score but covers only 55.9%.
+                "sample\t9453\t501\t1409\t+\t3a_D17763.1\t9456\t501\t1409\t851\t907\t60\tAS:i:346\ttp:A:P",
+                "sample\t9453\t4934\t9307\t+\t3a_D17763.1\t9456\t4935\t9308\t3955\t4253\t60\tAS:i:1153\ttp:A:P",
+                # D28917 is a lower-scoring reference of the winning genotype but
+                # provides the representative coverage evidence for QC.
+                "sample\t9453\t507\t3610\t+\t3a_D28917.1\t9454\t507\t3611\t2833\t3105\t12\tAS:i:339\ttp:A:P",
+                "sample\t9453\t4917\t9307\t+\t3a_D28917.1\t9454\t4918\t9308\t3928\t4272\t0\tAS:i:676\ttp:A:S",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    records = {
+        "sample": {
+            "description": "sample",
+            "sequence": "A" * 7428 + "N" * 2025,
+        }
+    }
+    args = SimpleNamespace(
+        min_query_coverage=0.70,
+        min_identity=0.75,
+        close_hit_fraction=0.98,
+    )
+
+    row = genotyping.build_assignment_rows(records, genotyping.parse_paf(paf), args)[0]
+
+    assert row["assignment_status"] == "pass"
+    assert row["assigned_genotype"] == "3a"
+    assert row["best_ref"] == "3a_D17763.1"
+    assert row["best_alignment_score"] == 1499
+    assert row["coverage_ref"] == "3a_D28917.1"
+    assert row["query_coverage"] == "0.792658"
+    assert row["identity"] == "0.916497"
+    assert row["alignment_segment_count"] == 2
+    assert row["non_n_bases"] == 7428
+    assert row["non_n_fraction"] == "0.785782"
 
 
 def test_split_hit_aggregation_rejects_discordant_target_gaps(tmp_path: Path) -> None:

@@ -404,10 +404,43 @@ def fmt_float(value):
     return f"{value:.6f}"
 
 
+def select_coverage_hit(hits, genotype, args):
+    """Choose the reference hit used for genotype-assignment QC.
+
+    Genotype assignment remains based on the strongest alignment score across the
+    panel.  Once that genotype has won, coverage QC may use a different reference
+    of the same genotype: first prefer hits that satisfy both QC thresholds, then
+    choose the one covering the greatest fraction of the query.  This prevents a
+    high-completion sequence from failing solely because the score-winning
+    reference aligns strongly to a shorter portion of it.
+    """
+    genotype_hits = [hit for hit in hits if extract_genotype(hit["target_id"]) == genotype]
+    passing_hits = [
+        hit
+        for hit in genotype_hits
+        if hit["query_coverage"] >= args.min_query_coverage
+        and hit["identity"] >= args.min_identity
+    ]
+    candidates = passing_hits or genotype_hits
+    return max(
+        candidates,
+        key=lambda hit: (
+            hit["query_coverage"],
+            hit["alignment_score"],
+            hit["identity"],
+            hit["matching_bases"],
+            hit["mapq"],
+            hit["target_id"],
+        ),
+    )
+
+
 def build_assignment_rows(records, hits_by_query, args):
     rows = []
     for query_id, record in records.items():
         sequence_length = len(record["sequence"])
+        non_n_bases = sum(base.upper() != "N" for base in record["sequence"])
+        non_n_fraction = non_n_bases / sequence_length if sequence_length else 0.0
         hits = sort_hits(aggregate_split_hits(hits_by_query.get(query_id, [])))
         if not hits:
             rows.append(
@@ -419,7 +452,10 @@ def build_assignment_rows(records, hits_by_query, args):
                     "qc_fail_reason": "no_alignment",
                     "best_ref": "",
                     "best_ref_genotype": "",
+                    "coverage_ref": "",
                     "query_length": sequence_length,
+                    "non_n_bases": non_n_bases,
+                    "non_n_fraction": fmt_float(non_n_fraction),
                     "best_alignment_score": 0,
                     "second_alignment_score": "",
                     "score_margin": "",
@@ -439,6 +475,7 @@ def build_assignment_rows(records, hits_by_query, args):
 
         best = hits[0]
         best_genotype = extract_genotype(best["target_id"])
+        coverage_hit = select_coverage_hit(hits, best_genotype, args)
         second_score = hits[1]["alignment_score"] if len(hits) > 1 else None
         score_margin = best["alignment_score"] - second_score if second_score is not None else None
         score_margin_fraction = score_margin / best["alignment_score"] if score_margin is not None and best["alignment_score"] else None
@@ -451,9 +488,9 @@ def build_assignment_rows(records, hits_by_query, args):
         ]
 
         fail_reasons = []
-        if best["query_coverage"] < args.min_query_coverage:
+        if coverage_hit["query_coverage"] < args.min_query_coverage:
             fail_reasons.append("low_query_coverage")
-        if best["identity"] < args.min_identity:
+        if coverage_hit["identity"] < args.min_identity:
             fail_reasons.append("low_identity")
 
         rows.append(
@@ -465,18 +502,21 @@ def build_assignment_rows(records, hits_by_query, args):
                 "qc_fail_reason": ";".join(fail_reasons),
                 "best_ref": best["target_id"],
                 "best_ref_genotype": best_genotype,
+                "coverage_ref": coverage_hit["target_id"],
                 "query_length": best["query_length"],
+                "non_n_bases": non_n_bases,
+                "non_n_fraction": fmt_float(non_n_fraction),
                 "best_alignment_score": best["alignment_score"],
                 "second_alignment_score": "" if second_score is None else second_score,
                 "score_margin": "" if score_margin is None else score_margin,
                 "score_margin_fraction": "" if score_margin_fraction is None else fmt_float(score_margin_fraction),
-                "query_coverage": fmt_float(best["query_coverage"]),
-                "target_coverage": fmt_float(best["target_coverage"]),
-                "identity": fmt_float(best["identity"]),
-                "mapq": best["mapq"],
-                "matching_bases": best["matching_bases"],
-                "alignment_block_length": best["alignment_block_length"],
-                "alignment_segment_count": best["alignment_segment_count"],
+                "query_coverage": fmt_float(coverage_hit["query_coverage"]),
+                "target_coverage": fmt_float(coverage_hit["target_coverage"]),
+                "identity": fmt_float(coverage_hit["identity"]),
+                "mapq": coverage_hit["mapq"],
+                "matching_bases": coverage_hit["matching_bases"],
+                "alignment_block_length": coverage_hit["alignment_block_length"],
+                "alignment_segment_count": coverage_hit["alignment_segment_count"],
                 "close_hits": ";".join(hit["target_id"] for hit in close_hits),
                 "other_potential_genotypes": ";".join(dict.fromkeys(other_genotypes)),
             }
@@ -493,7 +533,10 @@ def write_csv(path, rows):
         "qc_fail_reason",
         "best_ref",
         "best_ref_genotype",
+        "coverage_ref",
         "query_length",
+        "non_n_bases",
+        "non_n_fraction",
         "best_alignment_score",
         "second_alignment_score",
         "score_margin",

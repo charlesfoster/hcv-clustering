@@ -368,7 +368,9 @@ def _run_tab() -> None:
                 format="%.2f",
                 help=(
                     "Minimum fraction of the input sequence that must align to the "
-                    "best-matching reference during the genotyping step. Sequences below "
+                    "best-matching reference during the genotyping step. Compatible, "
+                    "non-overlapping split alignments are combined, so internal N blocks "
+                    "do not cause an otherwise covered genome to fail. Sequences below "
                     "this fail genotype assignment (qc_fail_reason=low_query_coverage)."
                 ),
             )

@@ -57,7 +57,10 @@ def parse_args(argv=None):
         "--min-query-coverage",
         type=float,
         default=0.50,
-        help="Minimum best-hit aligned query fraction required for a pass assignment. Default: 0.50",
+        help=(
+            "Minimum aligned query fraction required for a pass assignment after "
+            "combining compatible split alignments to the same reference. Default: 0.50"
+        ),
     )
     parser.add_argument(
         "--min-identity",
@@ -224,6 +227,7 @@ def parse_paf(path):
             query_length = int(fields[1])
             query_start = int(fields[2])
             query_end = int(fields[3])
+            strand = fields[4]
             target_id = fields[5]
             target_length = int(fields[6])
             target_start = int(fields[7])
@@ -244,8 +248,13 @@ def parse_paf(path):
                 {
                     "query_id": query_id,
                     "query_length": query_length,
+                    "query_start": query_start,
+                    "query_end": query_end,
+                    "strand": strand,
                     "target_id": target_id,
                     "target_length": target_length,
+                    "target_start": target_start,
+                    "target_end": target_end,
                     "query_aligned_bases": query_aligned_bases,
                     "target_aligned_bases": target_aligned_bases,
                     "matching_bases": matching_bases,
@@ -259,6 +268,121 @@ def parse_paf(path):
                 }
             )
     return hits_by_query
+
+
+def segments_are_collinear(left, right):
+    """Return whether two PAF segments can represent one split alignment.
+
+    Segments must be non-overlapping on both query and target, retain the same
+    orientation, and leave approximately the same-sized gap on both sequences.
+    The gap concordance guard permits ordinary small indels while rejecting
+    rearranged or obviously chimeric chains. Long runs of N naturally satisfy
+    this rule because they occupy the missing span in the query coordinates.
+    """
+    if left["target_id"] != right["target_id"] or left["strand"] != right["strand"]:
+        return False
+    if left["query_end"] > right["query_start"]:
+        return False
+
+    query_gap = right["query_start"] - left["query_end"]
+    if left["strand"] == "+":
+        if left["target_end"] > right["target_start"]:
+            return False
+        target_gap = right["target_start"] - left["target_end"]
+    else:
+        if right["target_end"] > left["target_start"]:
+            return False
+        target_gap = left["target_start"] - right["target_end"]
+
+    allowed_difference = max(50, int(0.10 * max(query_gap, target_gap, 1)))
+    return abs(query_gap - target_gap) <= allowed_difference
+
+
+def _chain_rank(chain):
+    """Prefer well-supported chains while retaining coverage as a tie-breaker."""
+    return (
+        any(hit["primary"] for hit in chain),
+        sum(hit["alignment_score"] for hit in chain),
+        sum(hit["matching_bases"] for hit in chain),
+        sum(hit["query_aligned_bases"] for hit in chain),
+        -len(chain),
+    )
+
+
+def best_collinear_chain(segments):
+    """Find the strongest compatible split-alignment chain for one target/strand."""
+    ordered = sorted(
+        segments,
+        key=lambda hit: (
+            hit["query_start"],
+            hit["query_end"],
+            hit["target_start"],
+            hit["target_end"],
+        ),
+    )
+    if not ordered:
+        return []
+
+    best_ending_at = [[hit] for hit in ordered]
+    for current_index, current in enumerate(ordered):
+        for previous_index in range(current_index):
+            previous_chain = best_ending_at[previous_index]
+            if not segments_are_collinear(previous_chain[-1], current):
+                continue
+            candidate = [*previous_chain, current]
+            if _chain_rank(candidate) > _chain_rank(best_ending_at[current_index]):
+                best_ending_at[current_index] = candidate
+    return max(best_ending_at, key=_chain_rank)
+
+
+def aggregate_hit_chain(chain):
+    """Collapse a compatible PAF chain into the metrics used for assignment QC."""
+    first = chain[0]
+    query_aligned_bases = sum(hit["query_aligned_bases"] for hit in chain)
+    target_aligned_bases = sum(hit["target_aligned_bases"] for hit in chain)
+    matching_bases = sum(hit["matching_bases"] for hit in chain)
+    alignment_block_length = sum(hit["alignment_block_length"] for hit in chain)
+    alignment_score = sum(hit["alignment_score"] for hit in chain)
+    return {
+        "query_id": first["query_id"],
+        "query_length": first["query_length"],
+        "query_start": min(hit["query_start"] for hit in chain),
+        "query_end": max(hit["query_end"] for hit in chain),
+        "strand": first["strand"],
+        "target_id": first["target_id"],
+        "target_length": first["target_length"],
+        "target_start": min(hit["target_start"] for hit in chain),
+        "target_end": max(hit["target_end"] for hit in chain),
+        "query_aligned_bases": query_aligned_bases,
+        "target_aligned_bases": target_aligned_bases,
+        "matching_bases": matching_bases,
+        "alignment_block_length": alignment_block_length,
+        "alignment_score": alignment_score,
+        "mapq": min(hit["mapq"] for hit in chain),
+        "identity": matching_bases / alignment_block_length if alignment_block_length else 0.0,
+        "query_coverage": query_aligned_bases / first["query_length"] if first["query_length"] else 0.0,
+        "target_coverage": target_aligned_bases / first["target_length"] if first["target_length"] else 0.0,
+        "primary": any(hit["primary"] for hit in chain),
+        "alignment_segment_count": len(chain),
+    }
+
+
+def aggregate_split_hits(hits):
+    """Combine compatible split mappings and return one best chain per reference."""
+    by_target_and_strand = defaultdict(list)
+    for hit in hits:
+        by_target_and_strand[(hit["target_id"], hit["strand"])].append(hit)
+
+    candidates_by_target = defaultdict(list)
+    for (target_id, _strand), segments in by_target_and_strand.items():
+        chain = best_collinear_chain(segments)
+        if chain:
+            candidates_by_target[target_id].append(aggregate_hit_chain(chain))
+
+    aggregated = []
+    for candidates in candidates_by_target.values():
+        aggregated.append(sort_hits(candidates)[0])
+    return aggregated
 
 
 def sort_hits(hits):
@@ -284,7 +408,7 @@ def build_assignment_rows(records, hits_by_query, args):
     rows = []
     for query_id, record in records.items():
         sequence_length = len(record["sequence"])
-        hits = sort_hits(hits_by_query.get(query_id, []))
+        hits = sort_hits(aggregate_split_hits(hits_by_query.get(query_id, [])))
         if not hits:
             rows.append(
                 {
@@ -306,6 +430,7 @@ def build_assignment_rows(records, hits_by_query, args):
                     "mapq": "",
                     "matching_bases": 0,
                     "alignment_block_length": 0,
+                    "alignment_segment_count": 0,
                     "close_hits": "",
                     "other_potential_genotypes": "",
                 }
@@ -351,6 +476,7 @@ def build_assignment_rows(records, hits_by_query, args):
                 "mapq": best["mapq"],
                 "matching_bases": best["matching_bases"],
                 "alignment_block_length": best["alignment_block_length"],
+                "alignment_segment_count": best["alignment_segment_count"],
                 "close_hits": ";".join(hit["target_id"] for hit in close_hits),
                 "other_potential_genotypes": ";".join(dict.fromkeys(other_genotypes)),
             }
@@ -378,6 +504,7 @@ def write_csv(path, rows):
         "mapq",
         "matching_bases",
         "alignment_block_length",
+        "alignment_segment_count",
         "close_hits",
         "other_potential_genotypes",
     ]

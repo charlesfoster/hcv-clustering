@@ -345,6 +345,13 @@ pixi run hcv-workflow genotype \
   --outdir results
 ```
 
+Genotype query coverage is calculated after combining compatible, non-overlapping,
+collinear minimap2 segments to the same reference. This allows genomes interrupted
+by internal runs of `N` to retain the coverage contributed by both flanks. Segments
+on different strands, overlapping query spans, rearranged target spans, or strongly
+discordant query/target gaps are not combined. `genotypes.csv` records the number of
+combined segments in `alignment_segment_count`.
+
 **Prepare a genotype-specific clustering FASTA:**
 
 ```bash

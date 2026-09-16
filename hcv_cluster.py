@@ -1081,7 +1081,10 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         metavar="FLOAT",
         type=float,
         default=0.50,
-        help=adv("Minimum minimap2 query coverage fraction for genotype pass (default: 0.50)"),
+        help=adv(
+            "Minimum minimap2 query coverage fraction for genotype pass after combining "
+            "compatible split alignments to the same reference (default: 0.50)"
+        ),
     )
     run_parser.add_argument(
         "--panel-fasta",

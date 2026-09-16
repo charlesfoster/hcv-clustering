@@ -1,6 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import assign_hcv_genotypes_from_fasta as genotyping
+import pytest
 
 
 def test_normalize_records_strips_gaps_before_length_is_measured() -> None:
@@ -45,3 +47,91 @@ def test_write_records_fasta_round_trips_normalized_sequence(tmp_path: Path) -> 
 
     reparsed = genotyping.parse_fasta(fasta_path)
     assert reparsed["seq1"]["sequence"] == "ACGTNNNNACGT"
+
+
+def _write_split_paf(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "sample\t9453\t4934\t9307\t+\t3a_D17763.1\t9456\t4935\t9308\t3955\t4253\t60\tAS:i:1153\ttp:A:P",
+                "sample\t9453\t501\t1409\t+\t3a_D17763.1\t9456\t501\t1409\t851\t907\t60\tAS:i:346\ttp:A:P",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_aggregate_split_hits_combines_collinear_nonoverlapping_segments(tmp_path: Path) -> None:
+    paf = tmp_path / "split.paf"
+    _write_split_paf(paf)
+
+    raw_hits = genotyping.parse_paf(paf)["sample"]
+    aggregated = genotyping.aggregate_split_hits(raw_hits)
+
+    assert len(aggregated) == 1
+    hit = aggregated[0]
+    assert hit["alignment_segment_count"] == 2
+    assert hit["query_aligned_bases"] == 5281
+    assert hit["alignment_score"] == 1499
+    assert hit["query_coverage"] == pytest.approx(5281 / 9453)
+    assert hit["identity"] == pytest.approx((3955 + 851) / (4253 + 907))
+
+
+def test_split_alignment_passes_query_coverage_after_aggregation(tmp_path: Path) -> None:
+    paf = tmp_path / "split.paf"
+    _write_split_paf(paf)
+    hits = genotyping.parse_paf(paf)
+    records = {"sample": {"description": "sample", "sequence": "N" * 9453}}
+    args = SimpleNamespace(
+        min_query_coverage=0.50,
+        min_identity=0.75,
+        close_hit_fraction=0.98,
+    )
+
+    row = genotyping.build_assignment_rows(records, hits, args)[0]
+
+    assert row["assignment_status"] == "pass"
+    assert row["assigned_genotype"] == "3a"
+    assert row["qc_fail_reason"] == ""
+    assert row["query_coverage"] == "0.558659"
+    assert row["alignment_segment_count"] == 2
+
+
+def test_split_hit_aggregation_rejects_discordant_target_gaps(tmp_path: Path) -> None:
+    paf = tmp_path / "discordant.paf"
+    paf.write_text(
+        "\n".join(
+            [
+                "sample\t9000\t0\t3000\t+\t3a_D17763.1\t9500\t0\t3000\t2800\t3000\t60\tAS:i:900\ttp:A:P",
+                # Query gap is 1000 nt but target gap is 4000 nt: not one collinear missing block.
+                "sample\t9000\t4000\t7000\t+\t3a_D17763.1\t9500\t7000\t9500\t2300\t2500\t60\tAS:i:800\ttp:A:P",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    hit = genotyping.aggregate_split_hits(genotyping.parse_paf(paf)["sample"])[0]
+
+    assert hit["alignment_segment_count"] == 1
+    assert hit["query_aligned_bases"] == 3000
+
+
+def test_split_hit_aggregation_rejects_query_overlap(tmp_path: Path) -> None:
+    paf = tmp_path / "overlap.paf"
+    paf.write_text(
+        "\n".join(
+            [
+                "sample\t9000\t0\t4000\t+\t3a_D17763.1\t9500\t0\t4000\t3700\t4000\t60\tAS:i:900\ttp:A:P",
+                "sample\t9000\t3500\t7000\t+\t3a_D17763.1\t9500\t3500\t7000\t3200\t3500\t60\tAS:i:800\ttp:A:P",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    hit = genotyping.aggregate_split_hits(genotyping.parse_paf(paf)["sample"])[0]
+
+    assert hit["alignment_segment_count"] == 1
+    assert hit["query_aligned_bases"] == 4000

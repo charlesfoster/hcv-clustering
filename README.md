@@ -345,16 +345,22 @@ pixi run hcv-workflow genotype \
   --outdir results
 ```
 
-Genotype query coverage is calculated after combining compatible, non-overlapping,
-collinear minimap2 segments to the same reference. This allows genomes interrupted
-by internal runs of `N` to retain the coverage contributed by both flanks. Segments
-on different strands, overlapping query spans, rearranged target spans, or strongly
-discordant query/target gaps are not combined. Genotype assignment uses the
-highest-scoring reference. Coverage QC then uses the broadest compatible passing
-alignment to a reference of that winning genotype, recorded in `coverage_ref`.
-`genotypes.csv` also records the number of combined segments in
-`alignment_segment_count`, plus the input sequence's `non_n_bases` and
-`non_n_fraction` so sequence completeness is distinct from alignment coverage.
+Competitive genotyping uses minimap2's `asm20` preset so divergent envelope-region
+sequence remains detectable. Query coverage is calculated over callable (non-`N`)
+bases after combining compatible, non-overlapping, collinear segments to the same
+reference; leading, trailing, and internal `N` padding therefore does not lower the
+coverage fraction. Segments on different strands, overlapping query spans,
+rearranged target spans, or strongly discordant query/target gaps are not combined.
+
+Genotype assignment uses the highest-scoring reference. Coverage QC then uses the
+broadest compatible passing alignment to a reference of that winning genotype,
+recorded in `coverage_ref`. Identity QC uses minimap2's gap-compressed divergence
+(`de`) so a long absent genome block counts as one gap event rather than thousands
+of nucleotide mismatches; `block_identity` retains the conventional PAF
+matches/alignment-block value for audit. `genotypes.csv` also records the old
+whole-query coordinate-span coverage as `query_span_coverage`, the number of
+combined segments in `alignment_segment_count`, and the input sequence's
+`non_n_bases` and `non_n_fraction`.
 
 **Prepare a genotype-specific clustering FASTA:**
 

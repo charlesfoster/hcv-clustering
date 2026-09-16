@@ -49,6 +49,12 @@ def test_write_records_fasta_round_trips_normalized_sequence(tmp_path: Path) -> 
     assert reparsed["seq1"]["sequence"] == "ACGTNNNNACGT"
 
 
+def test_default_minimap2_preset_allows_more_divergent_hcv() -> None:
+    args = genotyping.parse_args(["--input", "in.fasta", "--output-csv", "out.csv"])
+
+    assert args.preset == "asm20"
+
+
 def _write_split_paf(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -82,7 +88,8 @@ def test_split_alignment_passes_query_coverage_after_aggregation(tmp_path: Path)
     paf = tmp_path / "split.paf"
     _write_split_paf(paf)
     hits = genotyping.parse_paf(paf)
-    records = {"sample": {"description": "sample", "sequence": "N" * 9453}}
+    sequence = "N" * 501 + "A" * 908 + "N" * 3525 + "A" * 4373 + "N" * 146
+    records = {"sample": {"description": "sample", "sequence": sequence}}
     args = SimpleNamespace(
         min_query_coverage=0.50,
         min_identity=0.75,
@@ -96,10 +103,11 @@ def test_split_alignment_passes_query_coverage_after_aggregation(tmp_path: Path)
     assert row["qc_fail_reason"] == ""
     assert row["best_ref"] == "3a_D17763.1"
     assert row["coverage_ref"] == "3a_D17763.1"
-    assert row["query_coverage"] == "0.558659"
+    assert row["query_coverage"] == "1.000000"
+    assert row["query_span_coverage"] == "0.558659"
     assert row["alignment_segment_count"] == 2
-    assert row["non_n_bases"] == 0
-    assert row["non_n_fraction"] == "0.000000"
+    assert row["non_n_bases"] == 5281
+    assert row["non_n_fraction"] == "0.558659"
 
 
 def test_coverage_qc_uses_broadest_passing_reference_within_winning_genotype(tmp_path: Path) -> None:
@@ -119,12 +127,11 @@ def test_coverage_qc_uses_broadest_passing_reference_within_winning_genotype(tmp
         + "\n",
         encoding="utf-8",
     )
-    records = {
-        "sample": {
-            "description": "sample",
-            "sequence": "A" * 7428 + "N" * 2025,
-        }
-    }
+    sequence = list("A" * 9453)
+    for start, end in ((0, 501), (3649, 4917), (7133, 7252), (9317, 9453)):
+        sequence[start:end] = "N" * (end - start)
+    sequence[8000] = "N"
+    records = {"sample": {"description": "sample", "sequence": "".join(sequence)}}
     args = SimpleNamespace(
         min_query_coverage=0.70,
         min_identity=0.75,
@@ -138,11 +145,43 @@ def test_coverage_qc_uses_broadest_passing_reference_within_winning_genotype(tmp
     assert row["best_ref"] == "3a_D17763.1"
     assert row["best_alignment_score"] == 1499
     assert row["coverage_ref"] == "3a_D28917.1"
-    assert row["query_coverage"] == "0.792658"
+    assert row["query_coverage"] == "0.992596"
+    assert row["query_span_coverage"] == "0.792658"
     assert row["identity"] == "0.916497"
+    assert row["identity_method"] == "block_fallback"
+    assert row["block_identity"] == "0.916497"
     assert row["alignment_segment_count"] == 2
     assert row["non_n_bases"] == 7428
     assert row["non_n_fraction"] == "0.785782"
+
+
+def test_gap_compressed_identity_does_not_treat_long_deletion_as_mismatches(tmp_path: Path) -> None:
+    paf = tmp_path / "long_deletion.paf"
+    paf.write_text(
+        "sample\t8256\t297\t7900\t+\t3a_D17763.1\t9456\t295\t9318\t6972\t9011\t60"
+        "\tAS:i:3009\ttp:A:P\tde:f:0.0832\n",
+        encoding="utf-8",
+    )
+    records = {
+        "sample": {
+            "description": "sample",
+            "sequence": "N" * 297 + "A" * 7604 + "N" * 355,
+        }
+    }
+    args = SimpleNamespace(
+        min_query_coverage=0.50,
+        min_identity=0.75,
+        close_hit_fraction=0.98,
+    )
+
+    row = genotyping.build_assignment_rows(records, genotyping.parse_paf(paf), args)[0]
+
+    assert row["assignment_status"] == "pass"
+    assert row["query_coverage"] == "0.999868"
+    assert row["query_span_coverage"] == "0.920906"
+    assert row["identity"] == "0.916800"
+    assert row["identity_method"] == "gap_compressed"
+    assert row["block_identity"] == "0.773721"
 
 
 def test_split_hit_aggregation_rejects_discordant_target_gaps(tmp_path: Path) -> None:

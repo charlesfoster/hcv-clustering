@@ -235,10 +235,11 @@ def test_build_parser_advanced_visible() -> None:
     assert min_cov_action.help != _argparse.SUPPRESS
 
 
-def test_run_parser_uses_e1_e2_and_70_percent_coverage_defaults() -> None:
+def test_run_parser_uses_e1_e2_and_tolerant_alignment_defaults() -> None:
     args = hcv_cluster.build_parser().parse_args(["run", "--input", "samples.fasta"])
     assert args.region == "e1-e2"
     assert args.min_coverage == 0.7
+    assert args.minimap2_preset == "asm20"
 
 
 def test_main_help_advanced_returns_zero() -> None:

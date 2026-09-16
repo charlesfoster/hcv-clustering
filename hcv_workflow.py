@@ -682,7 +682,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--threshold", required=True, type=float, help="Maximum TN93 distance to link")
     parser.add_argument("--panel-fasta", type=Path, default=assign_hcv_genotypes_from_fasta.DEFAULT_PANEL)
     parser.add_argument("--minimap2", default="minimap2")
-    parser.add_argument("--minimap2-preset", default="asm10")
+    parser.add_argument("--minimap2-preset", default="asm20")
     parser.add_argument("--extra-minimap2-args", default="")
     parser.add_argument("--max-secondary", type=int, default=50)
     parser.add_argument("--min-query-coverage", type=float, default=0.50)

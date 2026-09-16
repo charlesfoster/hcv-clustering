@@ -351,27 +351,28 @@ def _run_tab() -> None:
                 ),
             )
             min_identity = st.number_input(
-                "Min minimap2 identity",
+                "Min gap-compressed identity",
                 value=0.75,
                 step=0.05,
                 format="%.2f",
                 help=(
-                    "Minimum alignment identity to the best-matching reference during the "
-                    "genotyping step. Sequences below this fail genotype assignment "
-                    "(qc_fail_reason=low_identity) and never reach clustering."
+                    "Minimum gap-compressed alignment identity to a reference of the "
+                    "winning genotype. This avoids treating a long missing genome block "
+                    "as thousands of nucleotide mismatches. Sequences below this fail "
+                    "genotype assignment (qc_fail_reason=low_identity)."
                 ),
             )
             min_query_coverage = st.number_input(
-                "Min minimap2 query coverage",
+                "Min callable query coverage",
                 value=0.50,
                 step=0.05,
                 format="%.2f",
                 help=(
-                    "Minimum fraction of the input sequence that must align to the "
-                    "best-matching reference during the genotyping step. Compatible, "
-                    "non-overlapping split alignments are combined, so internal N blocks "
-                    "do not cause an otherwise covered genome to fail. Sequences below "
-                    "this fail genotype assignment (qc_fail_reason=low_query_coverage)."
+                    "Minimum fraction of callable (non-N) input bases that must align to "
+                    "a reference of the winning genotype. Compatible, non-overlapping "
+                    "split alignments are combined. N padding therefore does not lower "
+                    "this value. Sequences below it fail genotype assignment "
+                    "(qc_fail_reason=low_query_coverage)."
                 ),
             )
             region_strategy = st.selectbox(

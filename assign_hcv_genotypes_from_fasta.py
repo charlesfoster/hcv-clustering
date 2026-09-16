@@ -39,8 +39,8 @@ def parse_args(argv=None):
     parser.add_argument("--minimap2", default="minimap2", help="minimap2 executable path/name")
     parser.add_argument(
         "--preset",
-        default="asm10",
-        help="minimap2 preset for query FASTA versus reference panel. Default: asm10",
+        default="asm20",
+        help="minimap2 preset for query FASTA versus reference panel. Default: asm20",
     )
     parser.add_argument(
         "--extra-minimap2-args",
@@ -58,15 +58,20 @@ def parse_args(argv=None):
         type=float,
         default=0.50,
         help=(
-            "Minimum aligned query fraction required for a pass assignment after "
-            "combining compatible split alignments to the same reference. Default: 0.50"
+            "Minimum aligned fraction of callable (non-N) query bases required for a "
+            "pass assignment after combining compatible split alignments to the same "
+            "reference. Default: 0.50"
         ),
     )
     parser.add_argument(
         "--min-identity",
         type=float,
         default=0.75,
-        help="Minimum best-hit identity required for a pass assignment. Default: 0.75",
+        help=(
+            "Minimum minimap2 gap-compressed identity required for a pass assignment. "
+            "Falls back to conventional PAF block identity when the de tag is absent. "
+            "Default: 0.75"
+        ),
     )
     parser.add_argument(
         "--close-hit-fraction",
@@ -241,6 +246,13 @@ def parse_paf(path):
             query_aligned_bases = query_end - query_start
             target_aligned_bases = target_end - target_start
             identity = matching_bases / alignment_block_length if alignment_block_length else 0.0
+            divergence_tag = tags.get("de")
+            if divergence_tag is None:
+                gap_compressed_identity = identity
+                identity_method = "block"
+            else:
+                gap_compressed_identity = max(0.0, min(1.0, 1.0 - float(divergence_tag)))
+                identity_method = "gap_compressed"
             query_coverage = query_aligned_bases / query_length if query_length else 0.0
             target_coverage = target_aligned_bases / target_length if target_length else 0.0
 
@@ -262,7 +274,10 @@ def parse_paf(path):
                     "alignment_score": alignment_score,
                     "mapq": mapq,
                     "identity": identity,
+                    "gap_compressed_identity": gap_compressed_identity,
+                    "identity_method": identity_method,
                     "query_coverage": query_coverage,
+                    "query_intervals": ((query_start, query_end),),
                     "target_coverage": target_coverage,
                     "primary": primary,
                 }
@@ -343,6 +358,20 @@ def aggregate_hit_chain(chain):
     matching_bases = sum(hit["matching_bases"] for hit in chain)
     alignment_block_length = sum(hit["alignment_block_length"] for hit in chain)
     alignment_score = sum(hit["alignment_score"] for hit in chain)
+    gap_compressed_identity = (
+        sum(
+            hit["gap_compressed_identity"] * hit["alignment_block_length"]
+            for hit in chain
+        )
+        / alignment_block_length
+        if alignment_block_length
+        else 0.0
+    )
+    identity_method = (
+        "gap_compressed"
+        if all(hit["identity_method"] == "gap_compressed" for hit in chain)
+        else "block_fallback"
+    )
     return {
         "query_id": first["query_id"],
         "query_length": first["query_length"],
@@ -360,7 +389,13 @@ def aggregate_hit_chain(chain):
         "alignment_score": alignment_score,
         "mapq": min(hit["mapq"] for hit in chain),
         "identity": matching_bases / alignment_block_length if alignment_block_length else 0.0,
+        "gap_compressed_identity": gap_compressed_identity,
+        "identity_method": identity_method,
         "query_coverage": query_aligned_bases / first["query_length"] if first["query_length"] else 0.0,
+        "query_intervals": tuple(
+            (hit["query_start"], hit["query_end"])
+            for hit in sorted(chain, key=lambda item: (item["query_start"], item["query_end"]))
+        ),
         "target_coverage": target_aligned_bases / first["target_length"] if first["target_length"] else 0.0,
         "primary": any(hit["primary"] for hit in chain),
         "alignment_segment_count": len(chain),
@@ -404,6 +439,35 @@ def fmt_float(value):
     return f"{value:.6f}"
 
 
+def callable_query_coverage(hit, sequence):
+    """Return the fraction of non-N query bases covered by a hit's intervals."""
+    callable_bases = sum(base.upper() != "N" for base in sequence)
+    if not callable_bases:
+        return 0.0
+
+    covered_callable_bases = 0
+    previous_end = 0
+    for start, end in sorted(hit["query_intervals"]):
+        # Chained hits are non-overlapping, but merging here also makes this
+        # robust to externally constructed/test hit dictionaries.
+        start = max(start, previous_end)
+        if end > start:
+            covered_callable_bases += sum(base.upper() != "N" for base in sequence[start:end])
+            previous_end = end
+    return covered_callable_bases / callable_bases
+
+
+def add_qc_metrics(hit, sequence):
+    """Attach the coverage and identity definitions actually used for QC."""
+    return {
+        **hit,
+        "span_query_coverage": hit["query_coverage"],
+        "block_identity": hit["identity"],
+        "query_coverage": callable_query_coverage(hit, sequence),
+        "identity": hit["gap_compressed_identity"],
+    }
+
+
 def select_coverage_hit(hits, genotype, args):
     """Choose the reference hit used for genotype-assignment QC.
 
@@ -441,7 +505,10 @@ def build_assignment_rows(records, hits_by_query, args):
         sequence_length = len(record["sequence"])
         non_n_bases = sum(base.upper() != "N" for base in record["sequence"])
         non_n_fraction = non_n_bases / sequence_length if sequence_length else 0.0
-        hits = sort_hits(aggregate_split_hits(hits_by_query.get(query_id, [])))
+        hits = [
+            add_qc_metrics(hit, record["sequence"])
+            for hit in sort_hits(aggregate_split_hits(hits_by_query.get(query_id, [])))
+        ]
         if not hits:
             rows.append(
                 {
@@ -461,8 +528,11 @@ def build_assignment_rows(records, hits_by_query, args):
                     "score_margin": "",
                     "score_margin_fraction": "",
                     "query_coverage": "",
+                    "query_span_coverage": "",
                     "target_coverage": "",
                     "identity": "",
+                    "identity_method": "",
+                    "block_identity": "",
                     "mapq": "",
                     "matching_bases": 0,
                     "alignment_block_length": 0,
@@ -511,8 +581,11 @@ def build_assignment_rows(records, hits_by_query, args):
                 "score_margin": "" if score_margin is None else score_margin,
                 "score_margin_fraction": "" if score_margin_fraction is None else fmt_float(score_margin_fraction),
                 "query_coverage": fmt_float(coverage_hit["query_coverage"]),
+                "query_span_coverage": fmt_float(coverage_hit["span_query_coverage"]),
                 "target_coverage": fmt_float(coverage_hit["target_coverage"]),
                 "identity": fmt_float(coverage_hit["identity"]),
+                "identity_method": coverage_hit["identity_method"],
+                "block_identity": fmt_float(coverage_hit["block_identity"]),
                 "mapq": coverage_hit["mapq"],
                 "matching_bases": coverage_hit["matching_bases"],
                 "alignment_block_length": coverage_hit["alignment_block_length"],
@@ -542,8 +615,11 @@ def write_csv(path, rows):
         "score_margin",
         "score_margin_fraction",
         "query_coverage",
+        "query_span_coverage",
         "target_coverage",
         "identity",
+        "identity_method",
+        "block_identity",
         "mapq",
         "matching_bases",
         "alignment_block_length",

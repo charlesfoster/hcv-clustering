@@ -1074,7 +1074,10 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         metavar="FLOAT",
         type=float,
         default=0.75,
-        help=adv("Minimum minimap2 alignment identity for genotype pass (default: 0.75)"),
+        help=adv(
+            "Minimum minimap2 gap-compressed identity for genotype pass "
+            "(default: 0.75)"
+        ),
     )
     run_parser.add_argument(
         "--min-query-coverage",
@@ -1082,8 +1085,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         type=float,
         default=0.50,
         help=adv(
-            "Minimum minimap2 query coverage fraction for genotype pass after combining "
-            "compatible split alignments to the same reference (default: 0.50)"
+            "Minimum fraction of callable (non-N) query bases aligned for genotype pass "
+            "after combining compatible split alignments (default: 0.50)"
         ),
     )
     run_parser.add_argument(
@@ -1102,8 +1105,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--minimap2-preset",
         metavar="STR",
-        default="asm10",
-        help=adv("minimap2 preset (default: asm10)"),
+        default="asm20",
+        help=adv("minimap2 preset (default: asm20)"),
     )
     run_parser.add_argument(
         "--extra-minimap2-args",

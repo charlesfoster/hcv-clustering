@@ -439,6 +439,66 @@ def _legend_trace(
     )
 
 
+def _cluster_label_positions(
+    ordered_nodes: Sequence[str],
+    node_data: Sequence[Mapping[str, Any]],
+    layout: Mapping[str, Sequence[float]],
+) -> tuple[list[float], list[float], list[str]]:
+    """Place one label just outside each cluster's node bounding box.
+
+    Candidate positions on all four sides are scored against nodes from other
+    clusters and labels already placed. This is intentionally deterministic so
+    metadata restyling does not make labels jump around.
+    """
+    grouped_nodes: dict[str, list[str]] = {}
+    for node, data in zip(ordered_nodes, node_data, strict=True):
+        if int(data["cluster_size"]) <= 1:
+            continue
+        grouped_nodes.setdefault(_display_value(data.get("cluster_id")), []).append(node)
+    if not ordered_nodes:
+        return [], [], []
+
+    all_x = [float(layout[node][0]) for node in ordered_nodes]
+    all_y = [float(layout[node][1]) for node in ordered_nodes]
+    extent = max(max(all_x) - min(all_x), max(all_y) - min(all_y), 1.0)
+    offset = max(0.16, extent * 0.025)
+    placed: list[tuple[float, float]] = []
+    label_x: list[float] = []
+    label_y: list[float] = []
+    labels: list[str] = []
+
+    for cluster_id in sorted(grouped_nodes, key=_category_sort_key):
+        cluster_nodes = grouped_nodes[cluster_id]
+        xs = [float(layout[node][0]) for node in cluster_nodes]
+        ys = [float(layout[node][1]) for node in cluster_nodes]
+        center_x = (min(xs) + max(xs)) / 2
+        center_y = (min(ys) + max(ys)) / 2
+        candidates = (
+            (center_x, max(ys) + offset),
+            (max(xs) + offset, center_y),
+            (center_x, min(ys) - offset),
+            (min(xs) - offset, center_y),
+        )
+        cluster_node_set = set(cluster_nodes)
+        other_nodes = [node for node in ordered_nodes if node not in cluster_node_set]
+
+        def clearance(candidate: tuple[float, float]) -> float:
+            obstacles = [
+                (float(layout[node][0]), float(layout[node][1])) for node in other_nodes
+            ] + placed
+            if not obstacles:
+                return float("inf")
+            return min(math.hypot(candidate[0] - x, candidate[1] - y) for x, y in obstacles)
+
+        # ``max`` keeps the first (above-cluster) position when scores tie.
+        chosen = max(candidates, key=clearance)
+        label_x.append(chosen[0])
+        label_y.append(chosen[1])
+        labels.append(cluster_id)
+        placed.append(chosen)
+    return label_x, label_y, labels
+
+
 def build_network_figure(
     node_rows: list[dict[str, Any]],
     edge_rows: list[dict[str, Any]],
@@ -455,6 +515,7 @@ def build_network_figure(
     hover_fields: Sequence[str] | None = None,
     encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
     size_order: Sequence[Any] | None = None,
+    show_cluster_labels: bool = False,
     height: int = 600,
 ) -> go.Figure:
     """Build an interactive, vector-safe network with independent metadata channels.
@@ -692,6 +753,24 @@ def build_network_figure(
     data_traces = [edge_trace, node_trace]
     if center_trace is not None:
         data_traces.append(center_trace)
+    if show_cluster_labels:
+        label_x, label_y, cluster_labels = _cluster_label_positions(
+            ordered_nodes, node_data, layout
+        )
+        data_traces.append(
+            go.Scatter(
+                x=label_x,
+                y=label_y,
+                mode="text",
+                text=cluster_labels,
+                textposition="middle center",
+                textfont=dict(size=12, color="#222222"),
+                hoverinfo="skip",
+                name="Cluster IDs",
+                showlegend=False,
+                cliponaxis=False,
+            )
+        )
     fig = go.Figure(data=[*data_traces, *legends])
     fig.update_layout(
         showlegend=bool(legends), legend=dict(tracegroupgap=12),
@@ -715,6 +794,7 @@ def build_small_multiples_figure(
     node_spacing: NodeSpacing = "normal",
     hover_fields: Sequence[str] | None = None,
     encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
+    show_cluster_labels: bool = False,
     columns: int = 2,
 ) -> go.Figure:
     """Render up to four metadata views with identical node positions.
@@ -763,6 +843,7 @@ def build_small_multiples_figure(
             color_by=field,
             hover_fields=hover_fields,
             encoding_maps=encoding_maps,
+            show_cluster_labels=show_cluster_labels,
             height=420,
         )
         for trace in panel.data:

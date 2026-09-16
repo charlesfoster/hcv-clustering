@@ -19,6 +19,13 @@ def test_resolve_threshold_core_e2_nohvr1_default() -> None:
     assert hcv_cluster.resolve_threshold("core-e2-nohvr1", None) == 0.03
 
 
+def test_resolve_threshold_e1_e2_defaults_are_explicit_but_provisional() -> None:
+    assert hcv_cluster.resolve_threshold("e1-e2", None) == 0.03
+    assert hcv_cluster.resolve_threshold("e1-e2-nohvr1", None) == 0.03
+    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2") is False
+    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2-nohvr1") is False
+
+
 def test_resolve_threshold_core_e2_full() -> None:
     assert hcv_cluster.resolve_threshold("core-e2", None) == 0.045
 
@@ -33,8 +40,17 @@ def test_resolve_threshold_preset_expands_before_lookup() -> None:
     )
 
 
+def test_resolve_threshold_normalizes_equivalent_region_expressions() -> None:
+    assert hcv_cluster.resolve_threshold("envelope", None) == 0.03
+    assert hcv_cluster.resolve_threshold("e1+e2", None) == 0.03
+    assert hcv_cluster.resolve_threshold("core-e1+e2", None) == 0.045
+    assert hcv_cluster.resolve_threshold("core+e1+e2", None) == 0.045
+
+
 def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
-    assert hcv_cluster.resolve_threshold("e1-e2", None) == hcv_cluster.FALLBACK_THRESHOLD
+    assert hcv_cluster.resolve_threshold("cds", None) == hcv_cluster.FALLBACK_THRESHOLD
+    assert hcv_cluster.region_threshold_is_explicit("cds") is False
+    assert hcv_cluster.region_threshold_is_explicit("e1-e2") is True
 
 
 def test_resolve_threshold_case_insensitive() -> None:
@@ -217,6 +233,12 @@ def test_build_parser_advanced_visible() -> None:
     assert min_cov_action is not None
     import argparse as _argparse
     assert min_cov_action.help != _argparse.SUPPRESS
+
+
+def test_run_parser_uses_e1_e2_and_70_percent_coverage_defaults() -> None:
+    args = hcv_cluster.build_parser().parse_args(["run", "--input", "samples.fasta"])
+    assert args.region == "e1-e2"
+    assert args.min_coverage == 0.7
 
 
 def test_main_help_advanced_returns_zero() -> None:

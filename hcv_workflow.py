@@ -695,7 +695,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--force-download", action="store_true")
     parser.add_argument("--region")
     parser.add_argument("--region-strategy", choices=("fixed", "max-usable"), default="fixed")
-    parser.add_argument("--min-coverage", type=float, default=0.8)
+    parser.add_argument("--min-coverage", type=float, default=0.7)
     parser.add_argument("--mafft", default="mafft")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--genotype-validation", choices=("auto", "headers", "kmer", "none"), default="auto")

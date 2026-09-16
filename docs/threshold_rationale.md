@@ -2,17 +2,18 @@
 
 ## The one-sentence version
 
-> Default region is `core-e2-nohvr1` (Core-through-E2 with HVR1 masked) at TN93 ≤0.03, because that's the exact coupled specification used by the closest matching precedent — Bartlett et al. 2017, an Australian TN93 pairwise/connected-components network on the same region, the same distance metric, and the same clustering algorithm this pipeline uses; the full HVR1-inclusive `core-e2` region is kept as an explicit alternative at 0.045, matched to Lamoury et al. 2015's HVR1-inclusive Core-E2 value, since threshold and HVR1-handling are not independently swappable.
+> The default is full `e1-e2` at TN93 ≤0.03. This preserves the collaborators' established conservative convention, but it is a provisional operational cutoff—not a cutoff validated for this exact full-length region. Results should be checked across a sensitivity range and against epidemiological evidence.
 
 ---
 
 ## Defaults
 
-This pipeline offers two named Core-E2 variants, each paired with the threshold validated for it. The same
-numeric defaults are used for both distance metrics this pipeline supports, but **for different reasons** —
-see "TN93 vs. SNP defaults" below before assuming that's a coincidence or an oversight.
+The pipeline has explicit operational defaults so runs remain reproducible. Explicit does not mean
+region-specific validation: the E1–E2 values below are conservative starting points selected for continuity.
 
-- **`core-e2-nohvr1` (default): TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked.
+- **`e1-e2` (default): TN93 ≤0.03 / SNP ≤0.03**, HVR1 included; provisional.
+- **`e1-e2-nohvr1`: TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked; provisional.
+- **`core-e2-nohvr1`: TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked; literature-anchored but not an exact reproduction of the published fragment.
 - **`core-e2` (alternative): TN93 ≤0.045 / SNP ≤0.045**, HVR1 included, unchanged/contiguous.
 - **`ns5b`: TN93 ≤0.015 / SNP ≤0.015**.
 
@@ -29,13 +30,15 @@ but the citation is doing different work in each:
 
 | Region | TN93 default | Its real evidence | SNP default | Its real evidence |
 |---|---|---|---|---|
-| `core-e2-nohvr1` | 0.03 | **Bartlett et al. 2017**, TN93 directly — primary evidence | 0.03 | **Lamoury et al. 2015**, p-distance directly — primary evidence (and happens to numerically corroborate Bartlett) |
-| `core-e2` | 0.045 | Lamoury et al. 2015's p-distance value, reused as a TN93 approximation (no HVR1-inclusive TN93 precedent exists) | 0.045 | Lamoury et al. 2015, p-distance directly — primary evidence, no approximation needed |
-| `ns5b` | 0.015 | Lamoury et al. 2015's p-distance value, reused as a TN93 approximation | 0.015 | Lamoury et al. 2015, p-distance directly — primary evidence, no approximation needed |
+| `e1-e2` | 0.03 | Conservative operational convention; not validated for this exact region | 0.03 | Conservative operational convention; not validated for this exact region |
+| `e1-e2-nohvr1` | 0.03 | Provisional extrapolation | 0.03 | Provisional extrapolation |
+| `core-e2-nohvr1` | 0.03 | **Bartlett et al. 2017**, same metric/graph method but a shorter fragment — closest anchor | 0.03 | **Lamoury et al. 2015**, same distance family but a shorter fragment/tree method — supporting anchor |
+| `core-e2` | 0.045 | Lamoury et al. 2015's p-distance value, reused as a TN93 and full-region approximation | 0.045 | Lamoury et al. 2015 directly supports the p-distance value, but not this workflow's full-E2 span or connected-component method |
+| `ns5b` | 0.015 | Lamoury et al. 2015's partial-NS5B p-distance value, reused as a TN93/full-region approximation | 0.015 | Lamoury et al. 2015 directly supports the p-distance value for its partial NS5B fragment; region transfer remains approximate |
 
 In other words: for `core-e2` and `ns5b`, the SNP default is the *more* directly evidenced of the two — TN93
-is the one borrowing a p-distance number as a stand-in. Only `core-e2-nohvr1` has independent direct evidence
-for both metrics (Bartlett for TN93, Lamoury for p-distance/SNP), which is also why it's the default region.
+is the one borrowing a p-distance number as a stand-in. The Core–E2 papers are useful anchors, but their
+fragments and clustering methods do not constitute validation of the full E1–E2 default.
 
 One caveat: Lamoury et al. used MEGA's *partial deletion* (95% site-coverage cutoff across the whole
 alignment) for ambiguous/gap positions, whereas this pipeline's SNP distance uses *pairwise* deletion (only
@@ -52,25 +55,25 @@ metric-appropriate table; `--threshold` (CLI/GUI) still overrides either one exp
 
 | Region | Source | Population / metric | Threshold | Notes |
 |---|---|---|---|---|
-| Core-early-E2, HVR1 **masked** (H77 nt 347–1750 minus HVR1; matches this pipeline's default `core-e2-nohvr1`) | **Bartlett et al. 2017**, *J Viral Hepat* | Australian recent-HCV cohort (38% G1a, 48% G3a), **TN93** distance, **connected-components/single-linkage network** | **0.03** (sensitivity: 0.02, 0.025) | The strongest available precedent: same distance metric and same clustering algorithm as this pipeline, applied to (near-)the same region. Directly verified — see citation details below. |
-| Core-E2, HVR1 **included** (matches this pipeline's `core-e2` alternative) | Lamoury et al. 2015, *PLoS ONE* | GT1a, p-distance, 90% bootstrap + ClusterPicker | **0.045** | Tree-based/p-distance, not TN93 — an extrapolation, not a direct match. Used only because no HVR1-inclusive TN93 precedent exists. |
+| Core-early-E2, HVR1 **masked** (a shorter fragment than this pipeline's full `core-e2-nohvr1`) | **Bartlett et al. 2017**, *J Viral Hepat* | Australian recent-HCV cohort (38% G1a, 48% G3a), **TN93** distance, **connected-components/single-linkage network** | **0.03** (sensitivity: 0.02, 0.025) | The closest methodological precedent because the metric and graph method match, but not an exact region match. |
+| Core-to-early-E2, HVR1 **included** (shorter than this pipeline's full `core-e2`) | Lamoury et al. 2015, *PLoS ONE* | GT1a, p-distance, 90% bootstrap + ClusterPicker | **0.045** | Both the genomic span and clustering method differ. This is a literature anchor, not validation of full Core–E2 TN93 connected components. |
 | Core-E2, HVR1 **excluded** | Lamoury et al. 2015 | GT1a, p-distance, 90% bootstrap + ClusterPicker | 0.030 | Consistent with Bartlett et al.'s 0.03 despite the different metric/algorithm — corroborating, not primary, evidence for `core-e2-nohvr1`. |
 | NS5B | Lamoury et al. 2015 | GT1a, p-distance | 0.015 | Nothing found challenges this value. |
 | Partial E1 (H77 nt 943–1288) | Rose et al. 2018, *Infect Genet Evol* | High-risk PWID cohort with longitudinal follow-up, **HIV-TRACE** (TN93-based) and PhyloPart, reported as an "optimal threshold" | **0.039** | Not currently wired into `REGION_THRESHOLDS` (this pipeline has no distinct "partial E1" region), but documented here as a fallback if you're working from E1-only amplicon data lacking Core. Do not apply 0.03/0.045 to an E1-only region, and don't merge E1-only clusters with Core-E2 clusters. We confirmed the region, tools, and threshold value directly; we have not independently verified the exact optimization procedure behind "optimal," so treat that detail as reported rather than re-derived. |
 | Whole genome | Rodrigo et al. 2017 (InC3 study), *J Viral Hepat* | Early-infection full genomes, IDU cohorts (incl. Australia) | Mean patristic distance **0.01** under ML tree, 95% bootstrap | Tree-based, not TN93 — **not transferable** to this pipeline's method. Included for its important caveat below, not as a threshold source. |
-| Core-E2 minus HVR1 (1104 bp) | Bartlett et al. 2019, *J Int AIDS Soc* (ATAHC/ANZ cohort) | Australia/NZ, ClusterPicker + RAxML (GTR-model tree distance), 90% bootstrap | 0.05, chosen after sensitivity-testing 1.5%–5% | Corroborating evidence that thresholds well above 0.015 are appropriate for this region. Bartlett et al. 2017 is treated as primary evidence instead, since its method (TN93 + connected components) matches this pipeline directly, vs. this study's tree+bootstrap approach. |
+| Core-E2 minus HVR1 (1104 bp) | Bartlett et al. 2019, *J Int AIDS Soc* (ATAHC/ANZ cohort) | Australia/NZ, ClusterPicker + RAxML (GTR-model tree distance), 90% bootstrap | 0.05, chosen after sensitivity-testing 1.5%–5% | Corroborating evidence that thresholds well above 0.015 are appropriate for this region. Bartlett et al. 2017 is the closer methodological anchor because it used TN93 threshold edges and connected components, although its genomic fragment was also shorter than this workflow's full region. |
 | E1-HVR1 | Bretaña et al. 2015, *Emerg Infect Dis* (HITS-p prisoners) | Australian PWID/prisoners, PhyloPart percentile-based patristic distance | 1a: 0.034, 3a: 0.022 subs/site | Different region/method; the only genotype-specific Australian number found. 3a's cutoff is *lower* than 1a's here. |
 | HIV *pol* gene (different pathogen, cited for comparison) | Weaver et al. 2024, *bioRxiv* preprint (AUTO-TUNE) | HIV-TRACE standard default | 0.015 | The well-known HIV-TRACE convention. Included to make an explicit point: this is an HIV-*pol*-specific convention, not HCV Core-E2 evidence — don't reuse it for HCV without independent support. |
 
 ---
 
-## HVR1 masking: what it is and why it's the default
+## HVR1 masking: what it is and why it is available
 
 **Definition used**: HVR1 is the N-terminal 27 amino acids (81 nt) of E2, immediately following the E1/E2 cleavage site — H77 polyprotein residues 384–410, with E2 itself starting at residue 384 (Prentoe & Bukh 2018, *Front Immunol*, "Hypervariable Region 1 in Envelope Protein 2 of Hepatitis C Virus"). `hcv_cluster_prep.HVR1_LENGTH_NT = 81` implements this directly: it masks the first 81 nt of the annotated E2 region for every genotype/reference, rather than using genotype-specific coordinates — the position (immediately after E1/E2) is structurally conserved across genotypes even though HVR1's *sequence* is not.
 
-**Why masking is the default, not just an option**: HVR1 is the fastest-evolving part of the HCV genome (rapid immune-escape-driven divergence). Including it measurably shifts the "equivalent" clustering threshold upward — Lamoury et al. 2015 found the Core-E2 cutoff moved from 0.030 (HVR1 excluded) to 0.045 (HVR1 included) using the same method on the same samples. **The threshold and the region definition are a coupled specification, not independently swappable.** You cannot take Bartlett et al. 2017's 0.03 and apply it to an HVR1-inclusive alignment, or take Lamoury's 0.045 and apply it to an HVR1-masked one, and expect either to remain valid.
+HVR1 is the fastest-evolving part of the HCV genome. Including or excluding it can change pairwise distances and cluster membership, so the region must always be reported with the threshold. The new `e1-e2-nohvr1` option allows a matched sensitivity analysis without discarding HVR1 from the source sequence. Neither the 0.03 full-E1–E2 default nor its masked counterpart should be presented as validated for that exact region.
 
-**What masking does NOT mean**: HVR1 is not discarded from your sequence data — the full aligned FASTA (`prep.aligned.fasta`) still contains it. Only the *clustering* sequence (`prep.clustering.fasta`, and hence the TN93/SNP distance calculation) excludes it by default. If your priority is very-recent-transmission or outbreak-level resolution rather than broader population connectivity, an HVR1-inclusive analysis (or ideally HVR1 deep-sequencing with a haplotype-based method — see Campo et al., *outside this pipeline's scope*) may be more informative; that's exactly what `--region core-e2` gives you, alongside its own matched threshold.
+**What masking does NOT mean**: HVR1 is not discarded from your sequence data — the full aligned FASTA (`prep.aligned.fasta`) still contains it. Only the clustering sequence excludes it when a `-nohvr1` region is selected. Full `e1-e2` remains the default.
 
 **Genotype 3a caution**: Rodrigo et al.'s InC3 whole-genome study found that Core-partial-E2 (without HVR1) plus NS5B reproduced full-genome clustering well for genotype 1a, but *not* for 3a — several 3a clusters visible only via NS3/NS5A were missed. Neither Bartlett paper independently validated 3a specifically (their cohorts included substantial 3a representation and applied one uniform rule, but did not derive/optimize the threshold separately by genotype). **Treat borderline 3a links with more caution than 1a**, and cross-check against whole-genome phylogenetics where available, particularly for consequential surveillance decisions.
 
@@ -98,9 +101,9 @@ At any alignment position where either sequence carries an IUPAC ambiguity code 
 
 **The fix: mask `N` to a gap before clustering, independent of `--ambiguities`.** Since gaps are already neutralized by `tn93` under every mode, converting `N`→`-` specifically for the clustering FASTA (`hcv_cluster_prep.mask_n_as_gap`, applied after QC coverage is computed so `n_bases`/`n_fraction` in `prep.qc.csv` stay accurate, but before writing `prep.clustering.fasta`) makes `N` behave like a gap under *any* `-a` mode — without touching real ambiguity codes (`R`, `Y`, etc.), which are left for `--ambiguities` to handle. `prep.aligned.fasta` (the full alignment) is untouched — masking only affects the sequence actually handed to `tn93`. Verified with a combined synthetic test (one sequence with both an `N`-block and a real `R` site): with masking, `average` gives distance ≈0.005 — matching almost exactly what the lone `R` site should contribute on its own — versus 0.142 without masking. The `N`-driven distortion is gone; the real ambiguity signal is preserved.
 
-**Why `average` (not `skip`) is the default now that `N` is neutralized separately**: within this pipeline's actual extracted `core-e2-nohvr1` region (post-QC, i.e. what `tn93` really sees — checked directly against a real run, not just the raw input), real 2-fold ambiguity codes outnumbered `N` roughly 9-to-1 (831 vs. 89 occurrences across a 111-sequence test run), and `N` was only ~0.04% of all bases. Coverage QC (`--min-coverage`) already filters out `N`-heavy sequences before they reach `tn93` — that's what it's for. So the ambiguity `tn93` actually processes is dominated by real within-host signal, not depth artifacts, and `average` (proportional, unbiased treatment) suits that better than `skip` (which would needlessly discard it) or `resolve` (which still has a one-directional bias toward smaller distances for the real ambiguity codes it does encounter, since it always picks the distance-minimizing interpretation, never the maximizing one).
+**Why `average` (not `skip`) is the default now that `N` is neutralized separately**: in a checked real run, real 2-fold ambiguity codes greatly outnumbered `N`. Coverage QC already filters out sequences with excessive missing selected-region data. The ambiguity TN93 actually processes is therefore dominated by partially informative IUPAC calls, and `average` preserves their proportional information. `skip` discards it; `resolve` always chooses the distance-minimizing interpretation and can bias distances downward.
 
-**Residual caveat**: `--min-coverage` (default 0.8) explicitly permits up to 20% missing data per sequence, and the low-coverage examples we found in a real run were gap-dominated rather than `N`-dominated — but consensus-calling conventions vary (this project's own raw, pre-extraction data shows `N` used for large-scale depth masking at sequence termini), so a future dataset could plausibly have `N`-heavy sequences passing QC. N-masking protects against exactly that case regardless of which `-a` mode is chosen, which is why it's applied unconditionally rather than left as an opt-in flag.
+**Residual caveat**: `--min-coverage` (default 0.7) permits up to 30% missing data per sequence. Consensus-calling conventions vary, so N-masking protects against N-heavy sequences distorting distances regardless of the selected ambiguity mode.
 
 ---
 
@@ -108,11 +111,15 @@ At any alignment position where either sequence carries an IUPAC ambiguity code 
 
 ```python
 REGION_THRESHOLDS_TN93 = {
-    "core-e2-nohvr1": 0.03,   # default region
+    "e1-e2": 0.03,             # default; provisional operational cutoff
+    "e1-e2-nohvr1": 0.03,      # provisional operational cutoff
+    "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,         # HVR1 included, explicit alternative
     "ns5b": 0.015,
 }
 REGION_THRESHOLDS_SNP = {
+    "e1-e2": 0.03,
+    "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
@@ -123,14 +130,15 @@ Numerically identical tables today (see "TN93 vs. SNP defaults" above for why), 
 rather than one shared dict so a future metric-specific revision doesn't require guessing which citation a
 shared number was actually anchored to.
 
-- **`core-e2-nohvr1` (default) → 0.03.** Bartlett et al. 2017: TN93, connected components, Australian 1a/3a-dominated cohort — the closest methodological match available.
+- **`e1-e2` (default) and `e1-e2-nohvr1` → 0.03.** Explicit conservative operational defaults; sensitivity analysis is recommended.
+- **`core-e2-nohvr1` → 0.03.** Bartlett et al. 2017 is the closest methodological anchor, but its shorter fragment is not an exact match to the workflow's full region.
 - **`core-e2` (alternative, HVR1 included) → 0.045.** Lamoury et al. 2015's HVR1-inclusive Core-E2 p-distance value; see the metric caveat above.
 - **`ns5b` → 0.015.** Lamoury et al. 2015.
-- **Any other region → falls back to 0.03** (the default region's value) as the best-evidenced anchor, but this is an extrapolation. The CLI prints a warning when this fallback is used without an explicit `--threshold`:
+- **Any other region → falls back to 0.03** as a provisional starting point. The CLI prints a warning when a value lacks region-specific evidence:
 
   ```
   WARNING: no HCV-specific clustering threshold evidence for region '<region>'; using the
-  core-E2 default (0.03) as a starting point. See docs/threshold_rationale.md and consider
+  0.03 as a provisional starting point. See docs/threshold_rationale.md and consider
   passing --threshold explicitly.
   ```
 

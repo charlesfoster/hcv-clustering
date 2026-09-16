@@ -209,6 +209,35 @@ def test_grouped_combined_figure_labels_each_genotype_region() -> None:
     }
 
 
+def test_cluster_id_labels_are_one_vector_text_item_per_cluster() -> None:
+    nodes, edges = _metadata_network()
+
+    figure = hcv_cluster_viz.build_network_figure(
+        nodes, edges, show_cluster_labels=True
+    )
+
+    label_trace = next(trace for trace in figure.data if trace.name == "Cluster IDs")
+    assert label_trace.mode == "text"
+    assert list(label_trace.text) == ["1a_C0001", "3a_C0001"]
+    assert len(label_trace.x) == 2
+    assert label_trace.hoverinfo == "skip"
+
+
+def test_cluster_id_labels_omit_singletons() -> None:
+    nodes = [
+        {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "2"},
+        {"sample_id": "B", "cluster_id": "C0001", "cluster_size": "2"},
+        {"sample_id": "C", "cluster_id": "C0002", "cluster_size": "1"},
+    ]
+
+    figure = hcv_cluster_viz.build_network_figure(
+        nodes, [], show_cluster_labels=True
+    )
+
+    label_trace = next(trace for trace in figure.data if trace.name == "Cluster IDs")
+    assert list(label_trace.text) == ["C0001"]
+
+
 def test_shape_cardinality_is_rejected_before_ambiguous_symbol_reuse() -> None:
     nodes = [
         {"sample_id": str(index), "cluster_id": str(index), "cluster_size": "1", "kind": str(index)}
@@ -276,6 +305,21 @@ def test_small_multiples_reuse_positions_and_keep_hover_only_labels() -> None:
     assert {annotation.text for annotation in figure.layout.annotations} == {
         "location", "age range",
     }
+
+
+def test_small_multiples_repeat_one_cluster_label_trace_per_panel() -> None:
+    nodes, edges = _metadata_network()
+
+    figure = hcv_cluster_viz.build_small_multiples_figure(
+        nodes,
+        edges,
+        ["location", "age_range"],
+        show_cluster_labels=True,
+    )
+
+    label_traces = [trace for trace in figure.data if trace.name == "Cluster IDs"]
+    assert len(label_traces) == 2
+    assert all(list(trace.text) == ["1a_C0001", "3a_C0001"] for trace in label_traces)
 
 
 def test_svg_helper_rejects_raster_and_writes_vector(monkeypatch, tmp_path) -> None:

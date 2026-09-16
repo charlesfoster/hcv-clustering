@@ -27,9 +27,10 @@ import hcv_cluster_viz
 st.set_page_config(page_title="HCV Clustering", layout="wide")
 
 REGION_PRESETS_UI = (
-    ("core-e2-nohvr1", "Core–E2, HVR1 masked (default)"),
-    ("core-e2", "Core–E2, full (HVR1 included)"),
-    ("e1-e2", "Envelope (E1–E2)"),
+    ("e1-e2", "E1–E2, full (default)"),
+    ("e1-e2-nohvr1", "E1–E2, HVR1 masked"),
+    ("core-e2", "Core–E2, full"),
+    ("core-e2-nohvr1", "Core–E2, HVR1 masked"),
     ("ns2-ns5b", "Nonstructural (NS2–NS5B)"),
     ("cds", "Whole coding sequence"),
     ("ns5b", "NS5B only"),
@@ -38,7 +39,7 @@ REGION_PRESETS_UI = (
 
 def _region_picker() -> tuple[str, str | None]:
     if "region_expr" not in st.session_state:
-        st.session_state.region_expr = "core-e2-nohvr1"
+        st.session_state.region_expr = "e1-e2"
 
     st.write("Region")
     preset_cols = st.columns(len(REGION_PRESETS_UI))
@@ -52,8 +53,8 @@ def _region_picker() -> tuple[str, str | None]:
         help=(
             "Click a preset above, or type a custom expression: individual regions "
             "(core e1 e2 p7 ns2 ns3 ns4a ns4b ns5a ns5b), ranges (e1-e2, ns3-ns5b), "
-            "or unions (core-e2-nohvr1+ns3). core-e2-nohvr1 (default) masks HVR1; "
-            "core-e2 keeps it. Checked against known region names, not against any "
+            "or unions (e1-e2+ns3). e1-e2 (default) includes HVR1; "
+            "e1-e2-nohvr1 masks its first 81 nt. Checked against known region names, not against any "
             "specific reference's annotations."
         ),
     )
@@ -286,6 +287,8 @@ def _run_tab() -> None:
             )
         else:
             threshold = None
+            provisional = not hcv_cluster.region_threshold_is_evidence_based(region)
+            explicit = hcv_cluster.region_threshold_is_explicit(region)
             if distance == "both" and default_threshold_tn93 != default_threshold_snp:
                 st.caption(
                     f"Default for '{region}': TN93 **{default_threshold_tn93:.4g}**, "
@@ -294,6 +297,9 @@ def _run_tab() -> None:
             else:
                 metric_label = {"tn93": "TN93", "snp": "SNP", "both": "TN93 & SNP"}[distance]
                 st.caption(f"Default for '{region}' ({metric_label}): **{default_threshold:.4g}**")
+            if provisional:
+                qualifier = "provisional operational cutoff" if explicit else "generic fallback"
+                st.caption(f"This is a **{qualifier}**, not a cutoff validated for this exact region.")
     with col3:
         threads = st.number_input("MAFFT threads", min_value=1, value=1, step=1)
 
@@ -334,7 +340,7 @@ def _run_tab() -> None:
         with adv_col1:
             min_coverage = st.number_input(
                 "Min region coverage fraction",
-                value=0.8,
+                value=0.7,
                 step=0.05,
                 format="%.2f",
                 help=(
@@ -670,7 +676,18 @@ def _render_results(outdir: Path, distance: str) -> None:
     n_multi = len({row["cluster_id"] for row in node_rows if int(row["cluster_size"]) > 1})
     n_singleton = sum(1 for row in node_rows if int(row["cluster_size"]) == 1)
 
-    hide_singletons = st.checkbox("Hide singletons", key="hide_singletons")
+    filter_col, label_col = st.columns(2)
+    with filter_col:
+        hide_singletons = st.checkbox("Hide singletons", key="hide_singletons")
+    with label_col:
+        show_cluster_labels = st.checkbox(
+            "Show cluster ID labels",
+            key="show_cluster_labels",
+            help=(
+                "Place one editable text label beside each multi-member cluster. Sample names "
+                "remain available only on hover."
+            ),
+        )
     plot_node_rows, plot_edge_rows = (
         hcv_cluster_viz.filter_singletons(node_rows, edge_rows) if hide_singletons else (node_rows, edge_rows)
     )
@@ -907,6 +924,7 @@ def _render_results(outdir: Path, distance: str) -> None:
                     positions=layout_cache[cache_key],
                     hover_fields=hover_fields,
                     encoding_maps=encoding_maps,
+                    show_cluster_labels=show_cluster_labels,
                 )
             else:
                 fig = hcv_cluster_viz.build_network_figure(
@@ -921,6 +939,7 @@ def _render_results(outdir: Path, distance: str) -> None:
                     center_by=center_by,
                     hover_fields=hover_fields,
                     encoding_maps=encoding_maps,
+                    show_cluster_labels=show_cluster_labels,
                 )
         except ValueError as exc:
             st.error(f"Cannot apply the selected network appearance: {exc}")

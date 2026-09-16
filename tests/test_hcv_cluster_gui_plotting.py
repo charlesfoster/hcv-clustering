@@ -39,6 +39,11 @@ def test_gui_renders_composite_and_small_multiple_networks(tmp_path: Path) -> No
     assert not app.exception
     assert len(app.get("plotly_chart")) == 1
 
+    app.session_state["show_cluster_labels"] = True
+    app.run()
+    assert not app.exception
+    assert app.checkbox(key="show_cluster_labels").value is True
+
     app.session_state["network_display_mode"] = "Small multiples"
     app.session_state["network_small_multiple_fields"] = [
         "location",
@@ -49,3 +54,4 @@ def test_gui_renders_composite_and_small_multiple_networks(tmp_path: Path) -> No
     app.run()
     assert not app.exception
     assert len(app.get("plotly_chart")) == 1
+    assert app.checkbox(key="show_cluster_labels").value is True

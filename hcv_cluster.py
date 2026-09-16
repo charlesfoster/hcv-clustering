@@ -19,52 +19,84 @@ import hcv_cluster_viz
 import hcv_workflow
 
 
-# Evidence-based per-region defaults; see docs/threshold_rationale.md for citations
-# and the reasoning behind these specific values. Deliberately NOT genotype-split:
+# Explicit per-region defaults; some are provisional operational conventions and
+# others are literature-anchored. See docs/threshold_rationale.md. Deliberately NOT genotype-split:
 # the HCV Core-E2 literature applies a single threshold across genotypes, and the
 # only Australian genotype-specific number available (different region and metric)
 # does not support a 1a/1b-vs-rest split, so a genotype split isn't defensible as
 # evidence-based.
 #
-# TN93: "core-e2-nohvr1" (the default region) matches Bartlett et al. 2017's
-# Core-early-E2 TN93 pairwise/connected-components network directly (same metric,
-# same clustering algorithm as this pipeline) — the strongest available precedent.
+# TN93: "core-e2-nohvr1" is informed by Bartlett et al. 2017's
+# Core-early-E2 TN93 pairwise/connected-components network (same metric and
+# graph algorithm, but a shorter fragment) — the closest available precedent.
 # "core-e2" (HVR1 included) and "ns5b" have no HVR1-inclusive/NS5B TN93 precedent,
 # so they reuse Lamoury et al. 2015's uncorrected-p-distance values as a (slightly
 # conservative, since TN93 >= p-distance for the same pair) approximation.
 REGION_THRESHOLDS_TN93: dict[str, float] = {
+    "e1-e2": 0.03,
+    "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
 }
 
 # SNP: this pipeline's SNP distance is uncorrected p-distance (fraction of
-# ACGT-comparable sites that differ) -- exactly the metric Lamoury et al. 2015 used
-# (MEGA v6 p-distance, partial deletion). Their region thresholds are therefore a
-# direct match, not an approximation, for all three regions below.
+# ACGT-comparable sites that differ), the metric Lamoury et al. 2015 used (with a
+# different missing-data rule). The metric is directly comparable, but the study's
+# shorter fragments and ClusterPicker method mean the region thresholds remain
+# literature anchors rather than exact validation of this workflow.
 REGION_THRESHOLDS_SNP: dict[str, float] = {
+    "e1-e2": 0.03,
+    "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
 }
 
+# An explicit operational default is not the same as a region-specific validated
+# cutoff. E1-E2 uses 0.03 for continuity with collaborator practice and must keep
+# the provisional warning until it has been calibrated for this exact region.
+EVIDENCE_ANCHORED_REGIONS_TN93 = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
+EVIDENCE_ANCHORED_REGIONS_SNP = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
+
 # Backward-compat aliases: TN93 was the only metric these names covered originally.
 REGION_THRESHOLDS: dict[str, float] = REGION_THRESHOLDS_TN93
-FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["core-e2-nohvr1"]
-FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["core-e2-nohvr1"]
+FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["e1-e2"]
+FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["e1-e2"]
+
+
+def canonical_threshold_region(region: str) -> str:
+    """Normalize equivalent region spellings before choosing a default cutoff."""
+    canonical = hcv_cluster_prep.expand_region_expression(region)
+    equivalent_expressions = {
+        "e1+e2": "e1-e2",
+        "e1,e2": "e1-e2",
+        "core-e1+e2": "core-e2",
+        "core-e1,e2": "core-e2",
+        "core+e1+e2": "core-e2",
+        "core,e1,e2": "core-e2",
+    }
+    return equivalent_expressions.get(canonical, canonical)
 
 
 def resolve_threshold(region: str, user_threshold: float | None, distance: str = "tn93") -> float:
     if user_threshold is not None:
         return user_threshold
-    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    canonical_region = canonical_threshold_region(region)
     if distance == "snp":
         return REGION_THRESHOLDS_SNP.get(canonical_region, FALLBACK_THRESHOLD_SNP)
     return REGION_THRESHOLDS_TN93.get(canonical_region, FALLBACK_THRESHOLD)
 
 
 def region_threshold_is_evidence_based(region: str, distance: str = "tn93") -> bool:
-    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    canonical_region = canonical_threshold_region(region)
+    anchored = EVIDENCE_ANCHORED_REGIONS_SNP if distance == "snp" else EVIDENCE_ANCHORED_REGIONS_TN93
+    return canonical_region in anchored
+
+
+def region_threshold_is_explicit(region: str, distance: str = "tn93") -> bool:
+    """Whether the region has a named default rather than the generic fallback."""
+    canonical_region = canonical_threshold_region(region)
     table = REGION_THRESHOLDS_SNP if distance == "snp" else REGION_THRESHOLDS_TN93
     return canonical_region in table
 
@@ -702,11 +734,18 @@ def command_run(args: argparse.Namespace) -> int:
             "way. Prefer the p-distance default for anything reportable."
         )
     if args.threshold is None and not region_threshold_is_evidence_based(args.region):
-        print(
-            f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
-            f"using the core-E2 default ({FALLBACK_THRESHOLD:.3g}) as a starting point. "
-            "See docs/threshold_rationale.md and consider passing --threshold explicitly."
-        )
+        if region_threshold_is_explicit(args.region):
+            print(
+                f"NOTE: the {resolve_threshold(args.region, None):.3g} default for region "
+                f"'{args.region}' is a conservative operational convention, not a "
+                "region-validated cutoff. Sensitivity analysis is recommended."
+            )
+        else:
+            print(
+                f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
+                f"using {FALLBACK_THRESHOLD:.3g} as a provisional fallback. "
+                "See docs/threshold_rationale.md and consider passing --threshold explicitly."
+            )
     print()
 
     cluster_tables: list[tuple[str, Path]] = []
@@ -960,8 +999,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Maximum distance for cluster linking. Default: region-dependent "
-            "(0.03 for core-e2-nohvr1, the default region; 0.045 for core-e2 "
-            "with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
+            "(0.03 for e1-e2, the default region, and e1-e2-nohvr1; 0.045 for "
+            "core-e2 with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
             "see docs/threshold_rationale.md)."
         ),
     )
@@ -987,12 +1026,12 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "-r", "--region",
         metavar="EXPR",
-        default="core-e2-nohvr1",
+        default="e1-e2",
         help=(
-            "Reference-anchored region expression (default: core-e2-nohvr1, i.e. "
-            "Core-through-E2 with HVR1 masked — see docs/threshold_rationale.md). "
+            "Reference-anchored region expression (default: e1-e2, i.e. full "
+            "E1-through-E2 with HVR1 included — see docs/threshold_rationale.md). "
             "Individual regions: core e1 e2 p7 ns2 ns3 ns4a ns4b ns5a ns5b. "
-            "core-e2 is the same span with HVR1 included. "
+            "Append -nohvr1 to e1-e2 or core-e2 to mask the first 81 nt of E2. "
             "Named presets: structural (=core-e2-nohvr1), envelope (=e1-e2), "
             "nonstructural (=ns2-ns5b), cds (whole coding sequence). "
             "Range syntax: first-last selects all regions from first through last "
@@ -1027,8 +1066,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--min-coverage",
         metavar="FLOAT",
         type=float,
-        default=0.8,
-        help=adv("Minimum non-gap non-N selected-region coverage fraction (default: 0.8)"),
+        default=0.7,
+        help=adv("Minimum non-gap non-N selected-region coverage fraction (default: 0.7)"),
     )
     run_parser.add_argument(
         "--min-identity",

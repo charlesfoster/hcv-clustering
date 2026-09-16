@@ -12,6 +12,14 @@ def _synthetic_regions() -> dict[str, hcv_cluster_prep.RegionSegment]:
     }
 
 
+def test_prep_align_parser_uses_70_percent_coverage_default() -> None:
+    args = hcv_cluster_prep.build_parser().parse_args(
+        ["prep-align", "--input", "samples.fasta", "--genotype", "1a", "--out-prefix", "out"]
+    )
+    assert args.min_coverage == 0.7
+    assert args.region is None  # command_prep_align resolves fixed mode to e1-e2
+
+
 def test_mask_hvr1_from_e2_trims_n_terminal_span() -> None:
     e2 = hcv_cluster_prep.RegionSegment("e2", 1491, 2768, "test", "detail")
     trimmed = hcv_cluster_prep.mask_hvr1_from_e2(e2)
@@ -45,6 +53,16 @@ def test_core_e2_nohvr1_selection_excludes_hvr1_length_from_total() -> None:
     # Overall start/end still span the full genomic range, including the masked gap.
     assert selection.start == regions["core"].start
     assert selection.end == regions["e2"].end
+
+
+def test_e1_e2_nohvr1_retains_e1_and_excludes_hvr1() -> None:
+    regions = _synthetic_regions()
+    selection = hcv_cluster_prep.resolve_region_selection("e1-e2-nohvr1", regions, strategy="fixed")
+    assert len(selection.segments) == 2
+    assert selection.segments[0] == regions["e1"]
+    assert selection.segments[1].start == regions["e2"].start + hcv_cluster_prep.HVR1_LENGTH_NT
+    full_span = regions["e2"].end - regions["e1"].start + 1
+    assert selection.length == full_span - hcv_cluster_prep.HVR1_LENGTH_NT
 
 
 def test_core_e2_full_selection_is_unaffected_and_contiguous() -> None:

@@ -66,7 +66,7 @@ References are downloaded from NCBI and stored in `refs/`. This step only needs 
 pixi run hcv-cluster run -i samples.fasta
 ```
 
-Genotypes are detected automatically. The clustering threshold default is region-dependent (0.03 for `core-e2-nohvr1`, the default region; 0.045 for `core-e2` with HVR1 included; 0.015 for `ns5b`; 0.03 as a starting point for any other region — see [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence behind these values). Results are written to `results/` by default.
+Genotypes are detected automatically. The default analysis uses full `e1-e2` at a provisional, conservative threshold of 0.03. The same 0.03 operational default is used for `e1-e2-nohvr1`; established alternatives retain their region-specific values (`core-e2` 0.045, `core-e2-nohvr1` 0.03, and `ns5b` 0.015). See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence and limitations. Results are written to `results/` by default.
 
 For recurring runs against a growing input FASTA, write to a new output
 directory while reusing reference-anchored alignments from an earlier results
@@ -126,7 +126,7 @@ pixi run hcv-cluster run \
   -o my_results \
   -t 0.03 \
   -d both \
-  -r core-e2-nohvr1 \
+  -r e1-e2 \
   -T 4
 ```
 
@@ -136,7 +136,7 @@ pixi run hcv-cluster run \
 | `-o` | `--outdir` | `results` | Output directory |
 | `-t` | `--threshold` | region-dependent | Maximum distance for cluster linking |
 | `-d` | `--distance` | `tn93` | `tn93`, `snp`, or `both` |
-| `-r` | `--region` | `core-e2-nohvr1` | Genomic region expression (see below) |
+| `-r` | `--region` | `e1-e2` | Genomic region expression (see below) |
 | `-T` | `--threads` | `1` | MAFFT alignment threads |
 | `-v` | `--verbose` | off | Debug logging |
 
@@ -229,13 +229,13 @@ The displayed metadata can then be changed repeatedly without rerunning clusteri
 
 The **Node spacing** selector offers compact, normal, and expanded collision-aware layouts. Positions are cached for the selected graph, layout, singleton setting, and spacing, so changing metadata does not make nodes jump around. Sample ID and cluster details always remain in hover. High-cardinality encodings produce readability warnings rather than silently changing the data.
 
-Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
+Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Show cluster ID labels** adds one text label beside each multi-member cluster (rather than one per node); singleton IDs are omitted to avoid clutter. These labels are retained as editable text in SVG exports and are repeated in each small-multiple panel. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
 
 ---
 
 ## Region expressions
 
-The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `core-e2-nohvr1` covers Core through E2 with HVR1 (the hypervariable N-terminus of E2) masked out — the standard choice for HCV transmission surveillance, and the region the default threshold (0.03) is actually calibrated for. See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for why HVR1 is masked by default and how to get the full (HVR1-included) region instead.
+The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `e1-e2` retains full E1 and E2, including HVR1. Use `e1-e2-nohvr1` to retain all of E1 and E2 except the first 81 nt of E2. The E1–E2 threshold of 0.03 is an operational, conservative starting point rather than a cutoff validated for this exact full-length region; sensitivity analysis remains recommended.
 
 **Individual regions** (in genome order):
 
@@ -252,19 +252,21 @@ The `-r/--region` argument accepts a flexible expression describing which part o
 | `ns5a` | NS5A replication complex |
 | `ns5b` | NS5B RNA-dependent RNA polymerase |
 
-**Named Core-E2 variants** (not selectable as individual genes; each is its own top-level region name):
+**Named HVR1 variants** (each is its own top-level region name):
 
 | Name | Description | Default threshold |
 |------|-------------|-------------------|
-| `core-e2-nohvr1` | Core through E2, **HVR1 masked** — the default region | 0.03 |
+| `e1-e2` | E1 through E2, **HVR1 included** — the default region | 0.03 (provisional) |
+| `e1-e2-nohvr1` | E1 through E2, **HVR1 masked** | 0.03 (provisional) |
+| `core-e2-nohvr1` | Core through E2, **HVR1 masked** | 0.03 |
 | `core-e2` | Core through E2, **HVR1 included**, contiguous | 0.045 |
 
 **Named presets:**
 
 | Preset | Equivalent | Description |
 |--------|-----------|-------------|
-| `structural` | `core-e2-nohvr1` | Core through end of E2, HVR1 masked (default) |
-| `envelope` | `e1-e2` | Both envelope glycoproteins |
+| `structural` | `core-e2-nohvr1` | Core through end of E2, HVR1 masked |
+| `envelope` | `e1-e2` | Both envelope glycoproteins (default region) |
 | `nonstructural` | `ns2-ns5b` | NS2 through NS5B |
 | `cds` | — | Whole coding sequence (polyprotein) |
 

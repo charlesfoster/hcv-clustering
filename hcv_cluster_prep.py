@@ -283,9 +283,9 @@ REGION_PRESETS = {
 
 # HVR1 is the N-terminal 27 aa (81 nt) of E2, immediately following the E1/E2
 # cleavage site (H77 polyprotein residues 384-410; E2 itself starts at residue
-# 384). See docs/threshold_rationale.md for citations. "core-e2-nohvr1" excises
-# exactly this span from the contiguous Core-through-E2 region; "core-e2" keeps
-# the full, HVR1-inclusive span unchanged.
+# 384). See docs/threshold_rationale.md for citations. The two "*-nohvr1"
+# expressions excise exactly this span while retaining the rest of their named
+# range; the ordinary range expressions keep the full HVR1-inclusive span.
 HVR1_LENGTH_NT = 81
 
 DIRECT_BOUNDARY_FEATURE_TYPES = {
@@ -1069,7 +1069,7 @@ def validate_region_syntax(expression: str) -> str | None:
     known = ", ".join(CANONICAL_REGION_ORDER)
     presets = ", ".join(sorted(REGION_PRESETS))
     for part in parts:
-        if part in {"cds", "polyprotein", "core-e2-nohvr1"} or part in REGION_PRESETS:
+        if part in {"cds", "polyprotein", "core-e2-nohvr1", "e1-e2-nohvr1"} or part in REGION_PRESETS:
             continue
         if "-" in part:
             left, right = part.split("-", 1)
@@ -1092,6 +1092,9 @@ def resolve_region_part(part: str, regions: dict[str, RegionSegment]) -> list[Re
 
     if part == "core-e2-nohvr1":
         return resolve_core_e2_nohvr1(regions)
+
+    if part == "e1-e2-nohvr1":
+        return resolve_e1_e2_nohvr1(regions)
 
     if part in {"cds", "polyprotein"}:
         return [require_region(part, regions)]
@@ -1166,6 +1169,13 @@ def resolve_core_e2_nohvr1(regions: dict[str, RegionSegment]) -> list[RegionSegm
     return [core_through_e1, mask_hvr1_from_e2(e2)]
 
 
+def resolve_e1_e2_nohvr1(regions: dict[str, RegionSegment]) -> list[RegionSegment]:
+    """Return all of E1 plus E2 after its 81-nt N-terminal HVR1."""
+    e1 = require_region("e1", regions)
+    e2 = require_region("e2", regions)
+    return [e1, mask_hvr1_from_e2(e2)]
+
+
 def merge_region_segments(segments: Iterable[RegionSegment]) -> list[RegionSegment]:
     sorted_segments = sorted(segments, key=lambda segment: (segment.start, segment.end, segment.name))
     merged: list[RegionSegment] = []
@@ -1196,6 +1206,8 @@ def known_region_help(regions: dict[str, RegionSegment]) -> str:
         names.append("cds")
     if "core" in regions and "e1" in regions and "e2" in regions:
         names.append("core-e2-nohvr1")
+    if "e1" in regions and "e2" in regions:
+        names.append("e1-e2-nohvr1")
     names.extend(sorted(REGION_PRESETS))
     return ", ".join(dict.fromkeys(names))
 
@@ -2200,7 +2212,7 @@ def command_prep_align(args: argparse.Namespace) -> int:
     }
     region_expression = args.region
     if region_expression is None:
-        region_expression = "cds" if args.region_strategy == "max-usable" else "core-e2-nohvr1"
+        region_expression = "cds" if args.region_strategy == "max-usable" else "e1-e2"
 
     search_selection = resolve_region_selection(
         region_expression,
@@ -2294,9 +2306,9 @@ def build_parser() -> argparse.ArgumentParser:
     align_parser.add_argument(
         "--region",
         help=(
-            "Reference-anchored region expression. Defaults to core-e2-nohvr1 (Core-through-E2, "
-            "HVR1 masked) for fixed mode and cds for max-usable mode. Examples: core, e1-e2, "
-            "core-e2-nohvr1, core-e2 (HVR1 included), ns3, ns5a-ns5b, core-e2-nohvr1+ns3, cds."
+            "Reference-anchored region expression. Defaults to e1-e2 (full E1-through-E2, "
+            "HVR1 included) for fixed mode and cds for max-usable mode. Examples: core, e1-e2, "
+            "e1-e2-nohvr1, core-e2-nohvr1, core-e2, ns3, ns5a-ns5b, or cds."
         ),
     )
     align_parser.add_argument(
@@ -2312,7 +2324,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="region_strategy",
         help="Alias for --region-strategy max-usable",
     )
-    align_parser.add_argument("--min-coverage", type=float, default=0.8, help="Minimum non-gap non-N selected-region coverage")
+    align_parser.add_argument("--min-coverage", type=float, default=0.7, help="Minimum non-gap non-N selected-region coverage")
     align_parser.add_argument(
         "--max-usable-window-size",
         type=int,

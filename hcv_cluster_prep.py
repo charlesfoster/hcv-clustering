@@ -238,6 +238,8 @@ DEFAULT_REFERENCE_CATALOG = {
 # resolves core-E2 boundaries cleanly. tests/test_reference_catalog.py pins those
 # deviations so a silent drift cannot creep in.
 
+DIRECT_ANNOTATION_TOLERANCE_NT = 9
+
 CANONICAL_REGION_ORDER = (
     "core",
     "e1",
@@ -510,7 +512,9 @@ def parse_reference_region_map(
     The preferred path uses explicit mature peptide/gene/product annotations. If those
     are absent, the fallback aligns the target polyprotein translation to a cached
     reference with direct annotations and maps amino-acid boundaries back through the
-    target CDS location. No mature-region nucleotide coordinates are hard-coded.
+    target CDS location. When the transfer runs, it also corrects stale boundaries in a
+    record's own annotations (e.g. pre-p7 "E2/NS1" records). No mature-region
+    nucleotide coordinates are hard-coded.
     """
     require_biopython()
     try:
@@ -535,7 +539,7 @@ def parse_reference_region_map(
                 ", ".join(missing_regions),
             )
         else:
-            logger.warning(
+            logger.info(
                 "No direct mature-region feature boundaries found in %s; trying amino-acid boundary transfer",
                 genbank_path,
             )
@@ -549,7 +553,23 @@ def parse_reference_region_map(
             logger=logger,
         )
         for name, segment in transferred.items():
-            regions.setdefault(name, segment)
+            direct = regions.get(name)
+            if direct is None:
+                regions[name] = segment
+            else:
+                corrected = correct_stale_annotation(direct, segment)
+                if corrected != direct:
+                    logger.warning(
+                        "Corrected %s annotation in %s from %s-%s to %s-%s; the record's own "
+                        "annotation disagrees with template-transferred HCV polyprotein boundaries",
+                        name,
+                        genbank_path,
+                        direct.start,
+                        direct.end,
+                        corrected.start,
+                        corrected.end,
+                    )
+                    regions[name] = corrected
 
     if "core" not in regions or "e2" not in regions:
         raise HcvPrepError(
@@ -558,6 +578,32 @@ def parse_reference_region_map(
             "boundary transfer did not find a usable annotated template."
         )
     return regions
+
+
+def correct_stale_annotation(direct: RegionSegment, transferred: RegionSegment) -> RegionSegment:
+    """Replace any boundary of a record's own annotation that is off by more than a few codons.
+
+    Older GenBank records (e.g. D17763 3a, D49374 3b, AB031663 2k) predate p7 and
+    annotate "E2/NS1" ending ~17 aa early with p7 folded into NS2; some also shift
+    the NS4B/NS5A cleavage. Boundaries within tolerance are left to the record itself,
+    and each boundary is judged separately so adjacent regions stay contiguous.
+    """
+    start_stale = abs(direct.start - transferred.start) > DIRECT_ANNOTATION_TOLERANCE_NT
+    end_stale = abs(direct.end - transferred.end) > DIRECT_ANNOTATION_TOLERANCE_NT
+    if not start_stale and not end_stale:
+        return direct
+    return RegionSegment(
+        name=direct.name,
+        start=transferred.start if start_stale else direct.start,
+        end=transferred.end if end_stale else direct.end,
+        source="genbank_feature_annotation_corrected",
+        detail=f"annotation={direct.detail}; corrected_by={transferred.detail}",
+    )
+
+
+def is_usable_template(regions: dict[str, RegionSegment]) -> bool:
+    # Pre-p7 annotations use legacy E2/NS2 boundaries, so they must not seed transfers.
+    return "p7" in regions and "e2" in regions
 
 
 def parse_reference_coords(
@@ -863,7 +909,7 @@ def regions_from_aa_template(
             continue
 
         template_regions = regions_from_feature_annotations(template_record)
-        if not template_regions:
+        if not is_usable_template(template_regions):
             continue
 
         template_cds = find_polyprotein_cds(template_record)
@@ -965,7 +1011,7 @@ def has_annotated_template(current_genbank_path: Path, refs_dir: Path) -> bool:
             record = SeqIO.read(str(path), "genbank")
         except Exception:  # noqa: BLE001
             continue
-        if regions_from_feature_annotations(record):
+        if is_usable_template(regions_from_feature_annotations(record)):
             return True
     return False
 

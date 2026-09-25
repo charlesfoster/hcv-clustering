@@ -166,6 +166,17 @@ pixi run hcv-cluster run -i samples.fasta \
 
 `--plot-scope` accepts `per-genotype` (the default), `combined`, or `both`. A combined plot is a **presentation-only union** of the genotype networks: distances and clusters are still calculated separately within each genotype, and the workflow never creates cross-genotype links. `--plot-combined-layout packed` packs disconnected clusters together; `by-genotype` places those packed clusters in genotype-specific regions.
 
+### Repeated FASTA IDs and mixed infections
+
+The same sample ID may appear on several FASTA records, for example when a mixed infection yields more than one consensus sequence:
+
+- **Identical sequences** under one ID are exact repeats; only the first is kept.
+- **Distinct sequences** under one ID are renamed `ID__v1`, `ID__v2`, ... in input order, so every step keeps a unique key.
+- Variants assigned **different genotypes** are all kept, each in its own genotype network.
+- Variants sharing a **genotype** are reduced to one per sample, so a person never appears twice in one network. `--duplicate-selection region-coverage` (the default) keeps the variant with the best coverage of the clustering region, falling back to the most complete sequence (most unambiguous A/C/G/T bases) when coverage ties; `--duplicate-selection completeness` keeps the most complete sequence.
+
+Cluster tables carry `base_sample_id` (the original ID) and `mixed_infection` (`true` when a sample had more than one distinct sequence). Metadata is joined on `base_sample_id`, so a single metadata row per person applies to every variant, and both fields can be used for plot encodings or hover. `sequence_variants.csv` records each repeated record's new name, genotype, completeness, region coverage, and whether it was kept or why it was dropped.
+
 ### Sample metadata and plot appearance
 
 Supply an optional UTF-8 CSV keyed by the exact FASTA sample identifier:
@@ -313,6 +324,8 @@ results/
     3a/
       ...
   clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs
+  sequence_variants.csv                 repeated FASTA IDs: renames and keep/drop decisions (only if present)
+  input.variants_resolved.fasta         input with repeated IDs resolved (only if present)
   clusters.snp.csv                      merged SNP clusters (if --distance both)
   links.csv                             merged edge list, all genotypes (source, target, distance)
   links.snp.csv                         merged SNP edge list, with snp_count (if --distance both)

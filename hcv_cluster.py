@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 import assign_hcv_genotypes_from_fasta
 import hcv_cluster_metadata
 import hcv_cluster_prep
+import hcv_cluster_variants
 import hcv_cluster_viz
 import hcv_workflow
 
@@ -256,7 +257,15 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 
 _PLOT_BUILTIN_FIELDS = frozenset(
-    {"sample_id", "genotype", "cluster_id", "source_cluster_id", "cluster_size"}
+    {
+        "sample_id",
+        "genotype",
+        "cluster_id",
+        "source_cluster_id",
+        "cluster_size",
+        hcv_cluster_variants.BASE_SAMPLE_FIELD,
+        hcv_cluster_variants.MIXED_INFECTION_FIELD,
+    }
 )
 
 
@@ -432,7 +441,7 @@ def _warn_plot_metadata(
     args: argparse.Namespace,
 ) -> None:
     if metadata_rows:
-        node_ids = {str(row["sample_id"]) for row in node_rows}
+        node_ids = {hcv_cluster_metadata.metadata_key(row) for row in node_rows}
         metadata_ids = {str(row["sample_id"]) for row in metadata_rows}
         missing = sorted(node_ids.difference(metadata_ids))
         unknown = sorted(metadata_ids.difference(node_ids))
@@ -668,11 +677,29 @@ def command_run(args: argparse.Namespace) -> int:
         hcv_cluster_metadata.write_metadata_csv(metadata_rows, outdir / "metadata.csv")
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
 
+    # --- Repeated FASTA IDs (e.g. mixed infections) ---
+    variant_plan = hcv_cluster_variants.resolve_duplicate_ids(
+        hcv_cluster_variants.read_input_records(input_path)
+    )
+    genotype_input = input_path
+    if variant_plan.has_duplicates:
+        genotype_input = outdir / "input.variants_resolved.fasta"
+        hcv_cluster_prep.write_fasta_records(variant_plan.records, genotype_input)
+        repeats = sum(1 for v in variant_plan.variants if v.status == "dropped_identical_repeat")
+        mixed = variant_plan.mixed_sample_ids()
+        print(
+            f"NOTE: repeated FASTA IDs found. {len(mixed)} sample(s) have distinct sequences "
+            f"(renamed ID{hcv_cluster_variants.VARIANT_SEPARATOR}1, "
+            f"ID{hcv_cluster_variants.VARIANT_SEPARATOR}2, ...); {repeats} identical repeat(s) dropped. "
+            f"Same-genotype variants are reduced to one per sample by {args.duplicate_selection}. "
+            f"Details: {hcv_cluster_variants.VARIANTS_FILENAME}"
+        )
+
     # --- Genotyping ---
     print(f"Checking subtypes for: {input_path}")
 
     genotype_argv = [
-        "--input", str(input_path),
+        "--input", str(genotype_input),
         "--output-csv", str(genotype_csv),
         "--outdir", str(genotype_fasta_dir),
         "--panel-fasta", str(args.panel_fasta),
@@ -693,6 +720,7 @@ def command_run(args: argparse.Namespace) -> int:
         return rc
 
     genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
+    hcv_cluster_variants.record_genotypes(variant_plan, genotype_rows)
     genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
     if args.genotype:
         requested = set(args.genotype)
@@ -817,6 +845,18 @@ def command_run(args: argparse.Namespace) -> int:
             print(f"--> {qc_st['total']} sequences, {qc_st['passed']} passed QC ({pct})")
 
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
+        if variant_plan.has_duplicates:
+            dropped = hcv_cluster_variants.select_same_genotype(
+                variant_plan, genotype, qc_path, args.duplicate_selection
+            )
+            if dropped:
+                hcv_cluster_variants.remove_from_fasta(
+                    clustering_fasta, {variant.sequence_id for variant in dropped}
+                )
+                print(
+                    f"--> {len(dropped)} same-sample variant(s) dropped in favour of a "
+                    f"better sequence ({args.duplicate_selection})"
+                )
 
         if args.distance in ("tn93", "both"):
             threshold = resolve_threshold(args.region, args.threshold, distance="tn93")
@@ -913,6 +953,15 @@ def command_run(args: argparse.Namespace) -> int:
         snp_links_csv = outdir / "links.snp.csv"
         hcv_workflow.merge_cluster_tables(snp_cluster_tables, snp_clusters_csv)
         hcv_workflow.merge_link_tables(snp_link_tables, snp_links_csv)
+    merged_cluster_tables = [primary_clusters_csv]
+    if args.distance == "both":
+        merged_cluster_tables.append(outdir / "clusters.snp.csv")
+    for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables] + merged_cluster_tables:
+        hcv_cluster_variants.annotate_cluster_table(clusters_path, variant_plan)
+    if variant_plan.has_duplicates:
+        hcv_cluster_variants.write_variants_csv(
+            variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME
+        )
 
     _render_requested_plots(
         args,
@@ -1061,6 +1110,17 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         action="append",
         metavar="GENOTYPE",
         help=adv("Restrict processing to this genotype after auto-detection. May be repeated."),
+    )
+    run_parser.add_argument(
+        "--duplicate-selection",
+        choices=hcv_cluster_variants.SELECTION_MODES,
+        default="region-coverage",
+        help=(
+            "When one FASTA ID has several distinct sequences with the same genotype, keep "
+            "only the one with the best clustering-region coverage (ties: most complete), "
+            "or only the most complete. Variants of different genotypes are all kept. "
+            "(default: region-coverage)"
+        ),
     )
     run_parser.add_argument(
         "--min-coverage",

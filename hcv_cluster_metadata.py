@@ -29,6 +29,8 @@ RESERVED_METADATA_COLUMNS = frozenset(
         "source",
         "target",
         "distance",
+        "base_sample_id",
+        "mixed_infection",
     }
 )
 
@@ -224,6 +226,15 @@ def write_metadata_csv(metadata_rows: Sequence[Mapping[str, Any]], path: str | P
     return output_path
 
 
+def metadata_key(node_row: Mapping[str, Any]) -> str:
+    """Return the metadata sample_id for a node.
+
+    Nodes for renamed mixed-infection variants (``SAMPLE__v2``) carry the original
+    identifier in ``base_sample_id``; all other nodes are keyed by ``sample_id``.
+    """
+    return str(node_row.get("base_sample_id") or node_row["sample_id"])
+
+
 def join_metadata(
     node_rows: Sequence[Mapping[str, Any]],
     metadata_rows: Sequence[Mapping[str, Any]],
@@ -245,15 +256,15 @@ def join_metadata(
             raise MetadataValidationError(f"Duplicate metadata sample_id: {sample_id}")
         index[sample_id] = row
 
-    node_ids = {str(row["sample_id"]) for row in node_rows}
+    node_ids = {metadata_key(row) for row in node_rows}
     joined: list[dict[str, Any]] = []
-    missing_ids: list[str] = []
+    missing_ids: set[str] = set()
     for source in node_rows:
         row = dict(source)
-        sample_id = str(row["sample_id"])
+        sample_id = metadata_key(row)
         metadata = index.get(sample_id)
         if metadata is None:
-            missing_ids.append(sample_id)
+            missing_ids.add(sample_id)
             for field in fields:
                 row.setdefault(field, missing_value)
         else:

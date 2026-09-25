@@ -187,10 +187,12 @@ def test_metadata_is_persisted_normalized_before_pipeline_work(tmp_path: Path, m
     metadata = tmp_path / "input_metadata.csv"
     metadata.write_text("sample_id,age,location\na,31,P1\n", encoding="utf-8")
     outdir = tmp_path / "results"
+    fasta = tmp_path / "samples.fasta"
+    fasta.write_text(">a\nACGT\n", encoding="utf-8")
     monkeypatch.setattr(hcv_cluster.assign_hcv_genotypes_from_fasta, "main", lambda _argv: 7)
     args = hcv_cluster.build_parser().parse_args(
         [
-            "run", "--input", "samples.fasta", "--metadata", str(metadata),
+            "run", "--input", str(fasta), "--metadata", str(metadata),
             "--outdir", str(outdir),
         ]
     )

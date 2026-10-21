@@ -238,6 +238,8 @@ DEFAULT_REFERENCE_CATALOG = {
 # resolves core-E2 boundaries cleanly. tests/test_reference_catalog.py pins those
 # deviations so a silent drift cannot creep in.
 
+DIRECT_ANNOTATION_TOLERANCE_NT = 9
+
 CANONICAL_REGION_ORDER = (
     "core",
     "e1",
@@ -283,9 +285,9 @@ REGION_PRESETS = {
 
 # HVR1 is the N-terminal 27 aa (81 nt) of E2, immediately following the E1/E2
 # cleavage site (H77 polyprotein residues 384-410; E2 itself starts at residue
-# 384). See docs/threshold_rationale.md for citations. "core-e2-nohvr1" excises
-# exactly this span from the contiguous Core-through-E2 region; "core-e2" keeps
-# the full, HVR1-inclusive span unchanged.
+# 384). See docs/threshold_rationale.md for citations. The two "*-nohvr1"
+# expressions excise exactly this span while retaining the rest of their named
+# range; the ordinary range expressions keep the full HVR1-inclusive span.
 HVR1_LENGTH_NT = 81
 
 DIRECT_BOUNDARY_FEATURE_TYPES = {
@@ -510,7 +512,9 @@ def parse_reference_region_map(
     The preferred path uses explicit mature peptide/gene/product annotations. If those
     are absent, the fallback aligns the target polyprotein translation to a cached
     reference with direct annotations and maps amino-acid boundaries back through the
-    target CDS location. No mature-region nucleotide coordinates are hard-coded.
+    target CDS location. When the transfer runs, it also corrects stale boundaries in a
+    record's own annotations (e.g. pre-p7 "E2/NS1" records). No mature-region
+    nucleotide coordinates are hard-coded.
     """
     require_biopython()
     try:
@@ -535,7 +539,7 @@ def parse_reference_region_map(
                 ", ".join(missing_regions),
             )
         else:
-            logger.warning(
+            logger.info(
                 "No direct mature-region feature boundaries found in %s; trying amino-acid boundary transfer",
                 genbank_path,
             )
@@ -549,7 +553,23 @@ def parse_reference_region_map(
             logger=logger,
         )
         for name, segment in transferred.items():
-            regions.setdefault(name, segment)
+            direct = regions.get(name)
+            if direct is None:
+                regions[name] = segment
+            else:
+                corrected = correct_stale_annotation(direct, segment)
+                if corrected != direct:
+                    logger.warning(
+                        "Corrected %s annotation in %s from %s-%s to %s-%s; the record's own "
+                        "annotation disagrees with template-transferred HCV polyprotein boundaries",
+                        name,
+                        genbank_path,
+                        direct.start,
+                        direct.end,
+                        corrected.start,
+                        corrected.end,
+                    )
+                    regions[name] = corrected
 
     if "core" not in regions or "e2" not in regions:
         raise HcvPrepError(
@@ -558,6 +578,32 @@ def parse_reference_region_map(
             "boundary transfer did not find a usable annotated template."
         )
     return regions
+
+
+def correct_stale_annotation(direct: RegionSegment, transferred: RegionSegment) -> RegionSegment:
+    """Replace any boundary of a record's own annotation that is off by more than a few codons.
+
+    Older GenBank records (e.g. D17763 3a, D49374 3b, AB031663 2k) predate p7 and
+    annotate "E2/NS1" ending ~17 aa early with p7 folded into NS2; some also shift
+    the NS4B/NS5A cleavage. Boundaries within tolerance are left to the record itself,
+    and each boundary is judged separately so adjacent regions stay contiguous.
+    """
+    start_stale = abs(direct.start - transferred.start) > DIRECT_ANNOTATION_TOLERANCE_NT
+    end_stale = abs(direct.end - transferred.end) > DIRECT_ANNOTATION_TOLERANCE_NT
+    if not start_stale and not end_stale:
+        return direct
+    return RegionSegment(
+        name=direct.name,
+        start=transferred.start if start_stale else direct.start,
+        end=transferred.end if end_stale else direct.end,
+        source="genbank_feature_annotation_corrected",
+        detail=f"annotation={direct.detail}; corrected_by={transferred.detail}",
+    )
+
+
+def is_usable_template(regions: dict[str, RegionSegment]) -> bool:
+    # Pre-p7 annotations use legacy E2/NS2 boundaries, so they must not seed transfers.
+    return "p7" in regions and "e2" in regions
 
 
 def parse_reference_coords(
@@ -863,7 +909,7 @@ def regions_from_aa_template(
             continue
 
         template_regions = regions_from_feature_annotations(template_record)
-        if not template_regions:
+        if not is_usable_template(template_regions):
             continue
 
         template_cds = find_polyprotein_cds(template_record)
@@ -965,7 +1011,7 @@ def has_annotated_template(current_genbank_path: Path, refs_dir: Path) -> bool:
             record = SeqIO.read(str(path), "genbank")
         except Exception:  # noqa: BLE001
             continue
-        if regions_from_feature_annotations(record):
+        if is_usable_template(regions_from_feature_annotations(record)):
             return True
     return False
 
@@ -1069,7 +1115,7 @@ def validate_region_syntax(expression: str) -> str | None:
     known = ", ".join(CANONICAL_REGION_ORDER)
     presets = ", ".join(sorted(REGION_PRESETS))
     for part in parts:
-        if part in {"cds", "polyprotein", "core-e2-nohvr1"} or part in REGION_PRESETS:
+        if part in {"cds", "polyprotein", "core-e2-nohvr1", "e1-e2-nohvr1"} or part in REGION_PRESETS:
             continue
         if "-" in part:
             left, right = part.split("-", 1)
@@ -1092,6 +1138,9 @@ def resolve_region_part(part: str, regions: dict[str, RegionSegment]) -> list[Re
 
     if part == "core-e2-nohvr1":
         return resolve_core_e2_nohvr1(regions)
+
+    if part == "e1-e2-nohvr1":
+        return resolve_e1_e2_nohvr1(regions)
 
     if part in {"cds", "polyprotein"}:
         return [require_region(part, regions)]
@@ -1166,6 +1215,13 @@ def resolve_core_e2_nohvr1(regions: dict[str, RegionSegment]) -> list[RegionSegm
     return [core_through_e1, mask_hvr1_from_e2(e2)]
 
 
+def resolve_e1_e2_nohvr1(regions: dict[str, RegionSegment]) -> list[RegionSegment]:
+    """Return all of E1 plus E2 after its 81-nt N-terminal HVR1."""
+    e1 = require_region("e1", regions)
+    e2 = require_region("e2", regions)
+    return [e1, mask_hvr1_from_e2(e2)]
+
+
 def merge_region_segments(segments: Iterable[RegionSegment]) -> list[RegionSegment]:
     sorted_segments = sorted(segments, key=lambda segment: (segment.start, segment.end, segment.name))
     merged: list[RegionSegment] = []
@@ -1196,6 +1252,8 @@ def known_region_help(regions: dict[str, RegionSegment]) -> str:
         names.append("cds")
     if "core" in regions and "e1" in regions and "e2" in regions:
         names.append("core-e2-nohvr1")
+    if "e1" in regions and "e2" in regions:
+        names.append("e1-e2-nohvr1")
     names.extend(sorted(REGION_PRESETS))
     return ", ".join(dict.fromkeys(names))
 
@@ -2200,7 +2258,7 @@ def command_prep_align(args: argparse.Namespace) -> int:
     }
     region_expression = args.region
     if region_expression is None:
-        region_expression = "cds" if args.region_strategy == "max-usable" else "core-e2-nohvr1"
+        region_expression = "cds" if args.region_strategy == "max-usable" else "e1-e2"
 
     search_selection = resolve_region_selection(
         region_expression,
@@ -2294,9 +2352,9 @@ def build_parser() -> argparse.ArgumentParser:
     align_parser.add_argument(
         "--region",
         help=(
-            "Reference-anchored region expression. Defaults to core-e2-nohvr1 (Core-through-E2, "
-            "HVR1 masked) for fixed mode and cds for max-usable mode. Examples: core, e1-e2, "
-            "core-e2-nohvr1, core-e2 (HVR1 included), ns3, ns5a-ns5b, core-e2-nohvr1+ns3, cds."
+            "Reference-anchored region expression. Defaults to e1-e2 (full E1-through-E2, "
+            "HVR1 included) for fixed mode and cds for max-usable mode. Examples: core, e1-e2, "
+            "e1-e2-nohvr1, core-e2-nohvr1, core-e2, ns3, ns5a-ns5b, or cds."
         ),
     )
     align_parser.add_argument(
@@ -2312,7 +2370,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="region_strategy",
         help="Alias for --region-strategy max-usable",
     )
-    align_parser.add_argument("--min-coverage", type=float, default=0.8, help="Minimum non-gap non-N selected-region coverage")
+    align_parser.add_argument("--min-coverage", type=float, default=0.7, help="Minimum non-gap non-N selected-region coverage")
     align_parser.add_argument(
         "--max-usable-window-size",
         type=int,

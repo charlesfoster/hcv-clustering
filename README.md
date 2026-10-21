@@ -66,7 +66,7 @@ References are downloaded from NCBI and stored in `refs/`. This step only needs 
 pixi run hcv-cluster run -i samples.fasta
 ```
 
-Genotypes are detected automatically. The clustering threshold default is region-dependent (0.03 for `core-e2-nohvr1`, the default region; 0.045 for `core-e2` with HVR1 included; 0.015 for `ns5b`; 0.03 as a starting point for any other region — see [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence behind these values). Results are written to `results/` by default.
+Genotypes are detected automatically. The default analysis uses full `e1-e2` at a provisional, conservative threshold of 0.03. The same 0.03 operational default is used for `e1-e2-nohvr1`; established alternatives retain their region-specific values (`core-e2` 0.045, `core-e2-nohvr1` 0.03, and `ns5b` 0.015). See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence and limitations. Results are written to `results/` by default.
 
 For recurring runs against a growing input FASTA, write to a new output
 directory while reusing reference-anchored alignments from an earlier results
@@ -126,7 +126,7 @@ pixi run hcv-cluster run \
   -o my_results \
   -t 0.03 \
   -d both \
-  -r core-e2-nohvr1 \
+  -r e1-e2 \
   -T 4
 ```
 
@@ -136,7 +136,7 @@ pixi run hcv-cluster run \
 | `-o` | `--outdir` | `results` | Output directory |
 | `-t` | `--threshold` | region-dependent | Maximum distance for cluster linking |
 | `-d` | `--distance` | `tn93` | `tn93`, `snp`, or `both` |
-| `-r` | `--region` | `core-e2-nohvr1` | Genomic region expression (see below) |
+| `-r` | `--region` | `e1-e2` | Genomic region expression (see below) |
 | `-T` | `--threads` | `1` | MAFFT alignment threads |
 | `-v` | `--verbose` | off | Debug logging |
 
@@ -152,7 +152,75 @@ To also save cluster network plots (per genotype, and per metric if `--distance 
 pixi run hcv-cluster run -i samples.fasta --plot-network png --plot-hide-singletons
 ```
 
-`--plot-network` accepts `png` (static image), `html` (interactive, opens in a browser, works offline), or `both`. Files are written alongside each genotype's other outputs as `by_genotype/<genotype>/network.png`/`.html` (and `snp_network.*` for the SNP metric under `--distance both`). `--plot-hide-singletons` restricts plots to sequences that fall in a multi-member cluster.
+`--plot-network` accepts `png` (static image), `html` (interactive, opens in a browser and works offline), `svg` (editable vector image), `both` (PNG + HTML, retained for backward compatibility), or `all` (PNG + HTML + SVG). Per-genotype files are written alongside the other outputs as `by_genotype/<genotype>/network.*` (and `snp_network.*` for the SNP metric under `--distance both`). `--plot-hide-singletons` restricts plots to sequences that fall in a multi-member cluster.
+
+Plot scope is independent of the file format:
+
+```bash
+# Keep the default per-genotype plots and also create one combined plot.
+pixi run hcv-cluster run -i samples.fasta \
+  --plot-network all \
+  --plot-scope both \
+  --plot-combined-layout by-genotype
+```
+
+`--plot-scope` accepts `per-genotype` (the default), `combined`, or `both`. A combined plot is a **presentation-only union** of the genotype networks: distances and clusters are still calculated separately within each genotype, and the workflow never creates cross-genotype links. `--plot-combined-layout packed` packs disconnected clusters together; `by-genotype` places those packed clusters in genotype-specific regions.
+
+### Repeated FASTA IDs and mixed infections
+
+The same sample ID may appear on several FASTA records, for example when a mixed infection yields more than one consensus sequence:
+
+- **Identical sequences** under one ID are exact repeats; only the first is kept.
+- **Distinct sequences** under one ID are renamed `ID__v1`, `ID__v2`, ... in input order, so every step keeps a unique key.
+- Variants assigned **different genotypes** are all kept, each in its own genotype network.
+- Variants sharing a **genotype** are reduced to one per sample, so a person never appears twice in one network. `--duplicate-selection region-coverage` (the default) keeps the variant with the best coverage of the clustering region, falling back to the most complete sequence (most unambiguous A/C/G/T bases) when coverage ties; `--duplicate-selection completeness` keeps the most complete sequence.
+
+Cluster tables carry `base_sample_id` (the original ID) and `mixed_infection` (`true` when a sample had more than one distinct sequence). Metadata is joined on `base_sample_id`, so a single metadata row per person applies to every variant, and both fields can be used for plot encodings or hover. `sequence_variants.csv` records each repeated record's new name, genotype, completeness, region coverage, and whether it was kept or why it was dropped.
+
+### Sample metadata and plot appearance
+
+Supply an optional UTF-8 CSV keyed by the exact FASTA sample identifier:
+
+```csv
+sample_id,age,location,indigenous_status,injecting_status,subtype
+sample_001,27,Prison A,yes,current,1a
+sample_002,44,Prison B,no,former,1a
+sample_003,68,Prison A,yes,never,3a
+```
+
+```bash
+pixi run hcv-cluster run -i samples.fasta \
+  --metadata sample_metadata.csv \
+  --plot-network all \
+  --plot-scope both \
+  --plot-color-by location \
+  --plot-symbol-by age_range \
+  --plot-outline-by indigenous_status \
+  --plot-center-by injecting_status \
+  --plot-node-spacing expanded \
+  --plot-hover-field subtype
+```
+
+`sample_id` is required, must be unique, and must match FASTA identifiers. All other columns are retained as arbitrary plotting metadata, so future fields do not require a schema change. Blank values and plotted samples without a metadata row appear as `(missing)`; rows that do not appear in the plotted results are reported. Duplicate/blank identifiers, malformed ages, invalid headers, and reserved clustering-output column names are rejected with an actionable error. Metadata changes presentation only and cannot change distances, links, or cluster membership. A normalized copy is saved as `metadata.csv` in the result directory for later GUI rendering.
+
+When an `age` column is supplied, the workflow validates it as a non-negative whole number and derives the ordered `age_range` categories `0–30`, `31–60`, and `61+`. You may instead supply `age_range` directly; both ASCII forms (`0-30`, `31-60`) and en-dash forms are accepted and normalized. If both columns are present, they must agree.
+
+Colour, shape, outline, and a small centre mark are independent channels and can be used simultaneously through `--plot-color-by`, `--plot-symbol-by`, `--plot-outline-by`, and `--plot-center-by`. The recommended epidemiological mapping is location by colour, `age_range` by shape, indigenous status by outline, and injecting status by centre mark. These channels retain a common node footprint and are easier to distinguish than small changes in node area. Node size remains available through the advanced `--plot-size-by` channel for numeric or intrinsically ordered data; for another categorical field, repeat `--plot-size-order VALUE` from smallest to largest. Shape, outline, and centre marks work best for small numbers of categories. Repeat `--plot-hover-field FIELD` to select several hover fields. Sample ID and cluster details are always included in interactive hover text, while static PNG/SVG files deliberately do not draw sample-name labels.
+
+For a clearer publication view, repeat the same fixed network in up to four colour panels:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta \
+  --metadata sample_metadata.csv \
+  --plot-network svg \
+  --plot-scope combined \
+  --plot-small-multiple-field location \
+  --plot-small-multiple-field age_range \
+  --plot-small-multiple-field injecting_status \
+  --plot-small-multiple-field indigenous_status
+```
+
+Each small-multiple panel has identical node positions, so topology can be compared directly while colour carries only one meaning per panel. Small multiples cannot be combined with composite node-encoding flags. `--plot-node-spacing` accepts `compact`, `normal` (default), or `expanded`; it applies deterministic collision removal before components are packed.
 
 ### GUI
 
@@ -164,13 +232,21 @@ pixi run hcv-cluster-gui
 
 This opens a browser tab where you can upload an input FASTA, set the common options (threshold, distance metric, region, threads), cache reference sequences, and browse/download the resulting cluster tables. It calls the same code as `hcv-cluster` — nothing is duplicated or reimplemented, so both stay in sync automatically.
 
-After a run, pick a genotype (and metric, if `--distance both`) and click **View Clusters** to render an interactive network plot of that genotype's clustering result — nodes are sequences, edges are within-threshold pairs, coloured by cluster (singletons in grey). Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster, and use **Save image (PNG)** to download the current plot. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
+The FASTA uploader has an optional metadata CSV uploader beside it. The GUI validates the metadata before the run and uses the same `--metadata` pipeline path as the CLI.
+
+After a run, choose **All genotypes** or an individual genotype (and a metric, if `--distance both`) and click **View / update network**. The all-genotype view can either pack all disconnected clusters together or group them spatially by genotype. This toggle changes only the display: clustering remains genotype-stratified and there are no cross-genotype distance comparisons or links.
+
+The displayed metadata can then be changed repeatedly without rerunning clustering. **Composite nodes** provides independent dropdowns for colour, shape, outline, centre mark, and optional advanced size. **Apply epidemiology view** maps location to fill colour, age range to shape, indigenous status to outline, and injecting status to a centre mark when those fields are available; **Reset to cluster view** restores the familiar cluster colours. **Small multiples** shows up to four copies of the same network at once, using identical positions and one colour-coded metadata field per panel. Additional fields can always be selected for hover.
+
+The **Node spacing** selector offers compact, normal, and expanded collision-aware layouts. Positions are cached for the selected graph, layout, singleton setting, and spacing, so changing metadata does not make nodes jump around. Sample ID and cluster details always remain in hover. High-cardinality encodings produce readability warnings rather than silently changing the data.
+
+Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Show cluster ID labels** adds one text label beside each multi-member cluster (rather than one per node); singleton IDs are omitted to avoid clutter. These labels are retained as editable text in SVG exports and are repeated in each small-multiple panel. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
 
 ---
 
 ## Region expressions
 
-The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `core-e2-nohvr1` covers Core through E2 with HVR1 (the hypervariable N-terminus of E2) masked out — the standard choice for HCV transmission surveillance, and the region the default threshold (0.03) is actually calibrated for. See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for why HVR1 is masked by default and how to get the full (HVR1-included) region instead.
+The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `e1-e2` retains full E1 and E2, including HVR1. Use `e1-e2-nohvr1` to retain all of E1 and E2 except the first 81 nt of E2. The E1–E2 threshold of 0.03 is an operational, conservative starting point rather than a cutoff validated for this exact full-length region; sensitivity analysis remains recommended.
 
 **Individual regions** (in genome order):
 
@@ -187,19 +263,21 @@ The `-r/--region` argument accepts a flexible expression describing which part o
 | `ns5a` | NS5A replication complex |
 | `ns5b` | NS5B RNA-dependent RNA polymerase |
 
-**Named Core-E2 variants** (not selectable as individual genes; each is its own top-level region name):
+**Named HVR1 variants** (each is its own top-level region name):
 
 | Name | Description | Default threshold |
 |------|-------------|-------------------|
-| `core-e2-nohvr1` | Core through E2, **HVR1 masked** — the default region | 0.03 |
+| `e1-e2` | E1 through E2, **HVR1 included** — the default region | 0.03 (provisional) |
+| `e1-e2-nohvr1` | E1 through E2, **HVR1 masked** | 0.03 (provisional) |
+| `core-e2-nohvr1` | Core through E2, **HVR1 masked** | 0.03 |
 | `core-e2` | Core through E2, **HVR1 included**, contiguous | 0.045 |
 
 **Named presets:**
 
 | Preset | Equivalent | Description |
 |--------|-----------|-------------|
-| `structural` | `core-e2-nohvr1` | Core through end of E2, HVR1 masked (default) |
-| `envelope` | `e1-e2` | Both envelope glycoproteins |
+| `structural` | `core-e2-nohvr1` | Core through end of E2, HVR1 masked |
+| `envelope` | `e1-e2` | Both envelope glycoproteins (default region) |
 | `nonstructural` | `ns2-ns5b` | NS2 through NS5B |
 | `cds` | — | Whole coding sequence (polyprotein) |
 
@@ -246,6 +324,8 @@ results/
     3a/
       ...
   clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs
+  sequence_variants.csv                 repeated FASTA IDs: renames and keep/drop decisions (only if present)
+  input.variants_resolved.fasta         input with repeated IDs resolved (only if present)
   clusters.snp.csv                      merged SNP clusters (if --distance both)
   links.csv                             merged edge list, all genotypes (source, target, distance)
   links.snp.csv                         merged SNP edge list, with snp_count (if --distance both)
@@ -277,6 +357,23 @@ pixi run hcv-workflow genotype \
   --output-csv results/genotypes.csv \
   --outdir results
 ```
+
+Competitive genotyping uses minimap2's `asm20` preset so divergent envelope-region
+sequence remains detectable. Query coverage is calculated over callable (non-`N`)
+bases after combining compatible, non-overlapping, collinear segments to the same
+reference; leading, trailing, and internal `N` padding therefore does not lower the
+coverage fraction. Segments on different strands, overlapping query spans,
+rearranged target spans, or strongly discordant query/target gaps are not combined.
+
+Genotype assignment uses the highest-scoring reference. Coverage QC then uses the
+broadest compatible passing alignment to a reference of that winning genotype,
+recorded in `coverage_ref`. Identity QC uses minimap2's gap-compressed divergence
+(`de`) so a long absent genome block counts as one gap event rather than thousands
+of nucleotide mismatches; `block_identity` retains the conventional PAF
+matches/alignment-block value for audit. `genotypes.csv` also records the old
+whole-query coordinate-span coverage as `query_span_coverage`, the number of
+combined segments in `alignment_segment_count`, and the input sequence's
+`non_n_bases` and `non_n_fraction`.
 
 **Prepare a genotype-specific clustering FASTA:**
 

@@ -10,59 +10,94 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import assign_hcv_genotypes_from_fasta
+import hcv_cluster_metadata
 import hcv_cluster_prep
+import hcv_cluster_variants
 import hcv_cluster_viz
 import hcv_workflow
 
 
-# Evidence-based per-region defaults; see docs/threshold_rationale.md for citations
-# and the reasoning behind these specific values. Deliberately NOT genotype-split:
+# Explicit per-region defaults; some are provisional operational conventions and
+# others are literature-anchored. See docs/threshold_rationale.md. Deliberately NOT genotype-split:
 # the HCV Core-E2 literature applies a single threshold across genotypes, and the
 # only Australian genotype-specific number available (different region and metric)
 # does not support a 1a/1b-vs-rest split, so a genotype split isn't defensible as
 # evidence-based.
 #
-# TN93: "core-e2-nohvr1" (the default region) matches Bartlett et al. 2017's
-# Core-early-E2 TN93 pairwise/connected-components network directly (same metric,
-# same clustering algorithm as this pipeline) — the strongest available precedent.
+# TN93: "core-e2-nohvr1" is informed by Bartlett et al. 2017's
+# Core-early-E2 TN93 pairwise/connected-components network (same metric and
+# graph algorithm, but a shorter fragment) — the closest available precedent.
 # "core-e2" (HVR1 included) and "ns5b" have no HVR1-inclusive/NS5B TN93 precedent,
 # so they reuse Lamoury et al. 2015's uncorrected-p-distance values as a (slightly
 # conservative, since TN93 >= p-distance for the same pair) approximation.
 REGION_THRESHOLDS_TN93: dict[str, float] = {
+    "e1-e2": 0.03,
+    "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
 }
 
 # SNP: this pipeline's SNP distance is uncorrected p-distance (fraction of
-# ACGT-comparable sites that differ) -- exactly the metric Lamoury et al. 2015 used
-# (MEGA v6 p-distance, partial deletion). Their region thresholds are therefore a
-# direct match, not an approximation, for all three regions below.
+# ACGT-comparable sites that differ), the metric Lamoury et al. 2015 used (with a
+# different missing-data rule). The metric is directly comparable, but the study's
+# shorter fragments and ClusterPicker method mean the region thresholds remain
+# literature anchors rather than exact validation of this workflow.
 REGION_THRESHOLDS_SNP: dict[str, float] = {
+    "e1-e2": 0.03,
+    "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
     "ns5b": 0.015,
 }
 
+# An explicit operational default is not the same as a region-specific validated
+# cutoff. E1-E2 uses 0.03 for continuity with collaborator practice and must keep
+# the provisional warning until it has been calibrated for this exact region.
+EVIDENCE_ANCHORED_REGIONS_TN93 = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
+EVIDENCE_ANCHORED_REGIONS_SNP = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
+
 # Backward-compat aliases: TN93 was the only metric these names covered originally.
 REGION_THRESHOLDS: dict[str, float] = REGION_THRESHOLDS_TN93
-FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["core-e2-nohvr1"]
-FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["core-e2-nohvr1"]
+FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["e1-e2"]
+FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["e1-e2"]
+
+
+def canonical_threshold_region(region: str) -> str:
+    """Normalize equivalent region spellings before choosing a default cutoff."""
+    canonical = hcv_cluster_prep.expand_region_expression(region)
+    equivalent_expressions = {
+        "e1+e2": "e1-e2",
+        "e1,e2": "e1-e2",
+        "core-e1+e2": "core-e2",
+        "core-e1,e2": "core-e2",
+        "core+e1+e2": "core-e2",
+        "core,e1,e2": "core-e2",
+    }
+    return equivalent_expressions.get(canonical, canonical)
 
 
 def resolve_threshold(region: str, user_threshold: float | None, distance: str = "tn93") -> float:
     if user_threshold is not None:
         return user_threshold
-    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    canonical_region = canonical_threshold_region(region)
     if distance == "snp":
         return REGION_THRESHOLDS_SNP.get(canonical_region, FALLBACK_THRESHOLD_SNP)
     return REGION_THRESHOLDS_TN93.get(canonical_region, FALLBACK_THRESHOLD)
 
 
 def region_threshold_is_evidence_based(region: str, distance: str = "tn93") -> bool:
-    canonical_region = hcv_cluster_prep.expand_region_expression(region)
+    canonical_region = canonical_threshold_region(region)
+    anchored = EVIDENCE_ANCHORED_REGIONS_SNP if distance == "snp" else EVIDENCE_ANCHORED_REGIONS_TN93
+    return canonical_region in anchored
+
+
+def region_threshold_is_explicit(region: str, distance: str = "tn93") -> bool:
+    """Whether the region has a named default rather than the generic fallback."""
+    canonical_region = canonical_threshold_region(region)
     table = REGION_THRESHOLDS_SNP if distance == "snp" else REGION_THRESHOLDS_TN93
     return canonical_region in table
 
@@ -221,30 +256,351 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+_PLOT_BUILTIN_FIELDS = frozenset(
+    {
+        "sample_id",
+        "genotype",
+        "cluster_id",
+        "source_cluster_id",
+        "cluster_size",
+        hcv_cluster_variants.BASE_SAMPLE_FIELD,
+        hcv_cluster_variants.MIXED_INFECTION_FIELD,
+    }
+)
+
+
+def _requested_plot_fields(args: argparse.Namespace) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            field
+            for field in (
+                args.plot_color_by,
+                args.plot_symbol_by,
+                args.plot_size_by,
+                args.plot_outline_by,
+                args.plot_center_by,
+                *(args.plot_small_multiple_field or ()),
+                *(args.plot_hover_field or ()),
+            )
+            if field
+        )
+    )
+
+
+def _validate_plot_fields(
+    args: argparse.Namespace,
+    metadata_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    requested = set(_requested_plot_fields(args))
+    available = _PLOT_BUILTIN_FIELDS | set(hcv_cluster_metadata.metadata_fields(metadata_rows))
+    unknown = sorted(requested.difference(available))
+    if unknown:
+        available_text = ", ".join(sorted(available))
+        metadata_hint = " Supply the field in --metadata." if not metadata_rows else ""
+        raise ValueError(
+            f"Unknown plot metadata field(s): {', '.join(unknown)}. "
+            f"Available fields: {available_text}.{metadata_hint}"
+        )
+    if args.plot_size_order and not args.plot_size_by:
+        raise ValueError("--plot-size-order requires --plot-size-by")
+    if args.plot_size_order and len(args.plot_size_order) != len(set(args.plot_size_order)):
+        raise ValueError("--plot-size-order contains duplicate values")
+    if args.plot_small_multiple_field:
+        if len(dict.fromkeys(args.plot_small_multiple_field)) > 4:
+            raise ValueError("--plot-small-multiple-field may select at most four fields")
+        composite_fields = (
+            args.plot_color_by,
+            args.plot_symbol_by,
+            args.plot_size_by,
+            args.plot_outline_by,
+            args.plot_center_by,
+        )
+        if any(composite_fields):
+            raise ValueError(
+                "Small-multiple fields cannot be combined with composite node encodings"
+            )
+
+
+def _prepare_plot_rows(
+    clusters_csv: Path,
+    links_csv: Path,
+    *,
+    genotype: str | None,
+    hide_singletons: bool,
+    metadata_rows: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    node_rows: list[dict[str, Any]] = _read_csv_rows(clusters_csv)
+    edge_rows: list[dict[str, Any]] = _read_csv_rows(links_csv)
+    for row in node_rows:
+        if genotype is not None:
+            row.setdefault("genotype", genotype)
+            row.setdefault("source_cluster_id", row.get("cluster_id", ""))
+    if hide_singletons:
+        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+    if metadata_rows:
+        node_rows, _report = hcv_cluster_metadata.join_metadata(node_rows, metadata_rows)
+    return node_rows, edge_rows
+
+
 def _render_cluster_plot(
     plot_network: str,
     hide_singletons: bool,
-    genotype_dir: Path,
+    output_dir: Path,
     clusters_csv: Path,
     links_csv: Path,
     file_prefix: str,
+    *,
+    genotype: str | None = None,
+    metadata_rows: Sequence[Mapping[str, Any]] = (),
+    color_by: str | None = None,
+    symbol_by: str | None = None,
+    size_by: str | None = None,
+    size_order: Sequence[str] | None = None,
+    outline_by: str | None = None,
+    center_by: str | None = None,
+    small_multiple_fields: Sequence[str] = (),
+    hover_fields: Sequence[str] | None = None,
+    combined_layout: str | None = None,
+    node_spacing: str = "normal",
+    encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
 ) -> None:
     if plot_network == "none":
         return
-    node_rows = _read_csv_rows(clusters_csv)
-    edge_rows = _read_csv_rows(links_csv)
-    if hide_singletons:
-        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+    node_rows, edge_rows = _prepare_plot_rows(
+        clusters_csv,
+        links_csv,
+        genotype=genotype,
+        hide_singletons=hide_singletons,
+        metadata_rows=metadata_rows,
+    )
     if not node_rows:
         return
-    try:
-        fig = hcv_cluster_viz.build_network_figure(node_rows, edge_rows)
-        if plot_network in ("png", "both"):
-            fig.write_image(genotype_dir / f"{file_prefix}network.png", scale=2)
-        if plot_network in ("html", "both"):
-            fig.write_html(genotype_dir / f"{file_prefix}network.html", include_plotlyjs=True)
-    except Exception as exc:
-        print(f"WARNING: could not render network plot for {genotype_dir.name}: {exc}")
+    layout_mode = "component_packed" if combined_layout is not None else "spring"
+    group_by = "genotype" if combined_layout == "by-genotype" else None
+    requested_hover_list = [
+        field for field in (hover_fields or ()) if field != "sample_id"
+    ]
+    if combined_layout is not None and "genotype" not in requested_hover_list:
+        requested_hover_list.insert(0, "genotype")
+    requested_hover = tuple(requested_hover_list)
+    if small_multiple_fields:
+        fig = hcv_cluster_viz.build_small_multiples_figure(
+            node_rows,
+            edge_rows,
+            small_multiple_fields,
+            layout_mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+            hover_fields=requested_hover,
+            encoding_maps=encoding_maps,
+        )
+    else:
+        fig = hcv_cluster_viz.build_network_figure(
+            node_rows,
+            edge_rows,
+            layout_mode=layout_mode,
+            group_by=group_by,
+            node_spacing=node_spacing,
+            color_by=color_by,
+            symbol_by=symbol_by,
+            size_by=size_by,
+            size_order=size_order,
+            outline_by=outline_by,
+            center_by=center_by,
+            hover_fields=requested_hover,
+            encoding_maps=encoding_maps,
+        )
+    if plot_network in ("png", "both", "all"):
+        try:
+            fig.write_image(output_dir / f"{file_prefix}network.png", scale=2)
+        except Exception as exc:
+            print(f"WARNING: could not export PNG network plot for {output_dir.name}: {exc}")
+    if plot_network in ("html", "both", "all"):
+        try:
+            fig.write_html(output_dir / f"{file_prefix}network.html", include_plotlyjs=True)
+        except Exception as exc:
+            print(f"WARNING: could not export HTML network plot for {output_dir.name}: {exc}")
+    if plot_network in ("svg", "all"):
+        try:
+            hcv_cluster_viz.export_figure_svg(fig, output_dir / f"{file_prefix}network.svg")
+        except Exception as exc:
+            print(f"WARNING: could not export SVG network plot for {output_dir.name}: {exc}")
+
+
+def _summarize_ids(sample_ids: Sequence[str], limit: int = 5) -> str:
+    ordered = sorted(set(sample_ids))
+    displayed = ", ".join(ordered[:limit])
+    if len(ordered) > limit:
+        displayed += f", ... (+{len(ordered) - limit} more)"
+    return displayed
+
+
+def _warn_plot_metadata(
+    node_rows: Sequence[Mapping[str, Any]],
+    metadata_rows: Sequence[Mapping[str, Any]],
+    args: argparse.Namespace,
+) -> None:
+    if metadata_rows:
+        node_ids = {hcv_cluster_metadata.metadata_key(row) for row in node_rows}
+        metadata_ids = {str(row["sample_id"]) for row in metadata_rows}
+        missing = sorted(node_ids.difference(metadata_ids))
+        unknown = sorted(metadata_ids.difference(node_ids))
+        if missing:
+            print(
+                f"WARNING: metadata is missing for {len(missing)} plotted sample(s): "
+                f"{_summarize_ids(missing)}",
+                file=sys.stderr,
+            )
+        if unknown:
+            print(
+                f"WARNING: metadata contains {len(unknown)} sample(s) not represented in "
+                f"the plotted networks: {_summarize_ids(unknown)}",
+                file=sys.stderr,
+            )
+    warnings = hcv_cluster_viz.get_encoding_warnings(
+        node_rows,
+        color_by=args.plot_color_by,
+        symbol_by=args.plot_symbol_by,
+        size_by=args.plot_size_by,
+        outline_by=args.plot_outline_by,
+        center_by=args.plot_center_by,
+        size_order=args.plot_size_order,
+    )
+    for field in args.plot_small_multiple_field or ():
+        warnings.extend(
+            hcv_cluster_viz.get_encoding_warnings(node_rows, color_by=field)
+        )
+    for warning in dict.fromkeys(warnings):
+        print(f"WARNING: {warning}", file=sys.stderr)
+
+
+def _validate_plot_encodings(
+    node_rows: Sequence[Mapping[str, Any]], args: argparse.Namespace
+) -> None:
+    warnings = hcv_cluster_viz.get_encoding_warnings(
+        node_rows,
+        color_by=args.plot_color_by,
+        symbol_by=args.plot_symbol_by,
+        size_by=args.plot_size_by,
+        outline_by=args.plot_outline_by,
+        center_by=args.plot_center_by,
+        size_order=args.plot_size_order,
+    )
+    unusable = [
+        warning
+        for warning in warnings
+        if "distinct marker shapes" in warning
+        or "distinct centre marks" in warning
+        or "has no inherent size order" in warning
+    ]
+    if unusable:
+        raise ValueError("Invalid plot encoding: " + "; ".join(unusable))
+
+
+def _render_requested_plots(
+    args: argparse.Namespace,
+    outdir: Path,
+    metadata_rows: Sequence[Mapping[str, Any]],
+    cluster_tables: list[tuple[str, Path]],
+    link_tables: list[tuple[str, Path]],
+    snp_cluster_tables: list[tuple[str, Path]],
+    snp_link_tables: list[tuple[str, Path]],
+) -> None:
+    """Render requested per-genotype and/or combined plots from completed tables."""
+    if args.plot_network == "none":
+        return
+
+    metric_tables: list[
+        tuple[str, list[tuple[str, Path]], list[tuple[str, Path]], Path, Path]
+    ] = [("", cluster_tables, link_tables, outdir / "clusters.csv", outdir / "links.csv")]
+    if args.distance == "both":
+        metric_tables.append(
+            (
+                "snp_",
+                snp_cluster_tables,
+                snp_link_tables,
+                outdir / "clusters.snp.csv",
+                outdir / "links.snp.csv",
+            )
+        )
+
+    # Build mappings from the union of every plotted metric so categories keep the
+    # same colour/shape/outline as users switch plots.
+    union_by_sample: dict[str, dict[str, Any]] = {}
+    for _prefix, _clusters, _links, merged_clusters, merged_links in metric_tables:
+        metric_nodes, _metric_edges = _prepare_plot_rows(
+            merged_clusters,
+            merged_links,
+            genotype=None,
+            hide_singletons=args.plot_hide_singletons,
+            metadata_rows=metadata_rows,
+        )
+        for row in metric_nodes:
+            union_by_sample.setdefault(str(row["sample_id"]), row)
+    union_nodes = list(union_by_sample.values())
+    _validate_plot_encodings(union_nodes, args)
+    _warn_plot_metadata(union_nodes, metadata_rows, args)
+
+    encoding_maps: dict[str, Mapping[str, str]] = {}
+    for channel, field in (
+        ("color", args.plot_color_by),
+        ("symbol", args.plot_symbol_by),
+        ("outline", args.plot_outline_by),
+        ("center", args.plot_center_by),
+    ):
+        if field:
+            encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
+                (row.get(field) for row in union_nodes), channel=channel
+            )
+    for field in args.plot_small_multiple_field or ():
+        encoding_maps[f"color:{field}"] = hcv_cluster_viz.build_category_mapping(
+            (row.get(field) for row in union_nodes), channel="color"
+        )
+    effective_hover_fields = (
+        tuple(args.plot_hover_field)
+        if args.plot_hover_field is not None
+        else hcv_cluster_metadata.metadata_fields(metadata_rows)
+    )
+    render_options = {
+        "metadata_rows": metadata_rows,
+        "color_by": args.plot_color_by,
+        "symbol_by": args.plot_symbol_by,
+        "size_by": args.plot_size_by,
+        "size_order": args.plot_size_order,
+        "outline_by": args.plot_outline_by,
+        "center_by": args.plot_center_by,
+        "small_multiple_fields": tuple(args.plot_small_multiple_field or ()),
+        "hover_fields": effective_hover_fields,
+        "node_spacing": args.plot_node_spacing,
+        "encoding_maps": encoding_maps,
+    }
+
+    for file_prefix, per_gt_clusters, per_gt_links, merged_clusters, merged_links in metric_tables:
+        if args.plot_scope in ("per-genotype", "both"):
+            links_by_genotype = dict(per_gt_links)
+            for genotype, clusters_path in per_gt_clusters:
+                genotype_dir = outdir / "by_genotype" / hcv_workflow.safe_genotype_name(genotype)
+                _render_cluster_plot(
+                    args.plot_network,
+                    args.plot_hide_singletons,
+                    genotype_dir,
+                    clusters_path,
+                    links_by_genotype[genotype],
+                    file_prefix,
+                    genotype=genotype,
+                    **render_options,
+                )
+        if args.plot_scope in ("combined", "both"):
+            _render_cluster_plot(
+                args.plot_network,
+                args.plot_hide_singletons,
+                outdir,
+                merged_clusters,
+                merged_links,
+                file_prefix,
+                combined_layout=args.plot_combined_layout,
+                **render_options,
+            )
 
 
 def command_run(args: argparse.Namespace) -> int:
@@ -252,6 +608,10 @@ def command_run(args: argparse.Namespace) -> int:
     input_path: Path = Path(args.input)
     genotype_fasta_dir = outdir / "genotype_fastas"
     genotype_csv = outdir / "genotypes.csv"
+    metadata_rows = (
+        hcv_cluster_metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
+    )
+    _validate_plot_fields(args, metadata_rows)
 
     if args.dry_run:
         genotype_argv_display = [
@@ -313,13 +673,33 @@ def command_run(args: argparse.Namespace) -> int:
         )
 
     outdir.mkdir(parents=True, exist_ok=True)
+    if args.metadata is not None:
+        hcv_cluster_metadata.write_metadata_csv(metadata_rows, outdir / "metadata.csv")
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
+
+    # --- Repeated FASTA IDs (e.g. mixed infections) ---
+    variant_plan = hcv_cluster_variants.resolve_duplicate_ids(
+        hcv_cluster_variants.read_input_records(input_path)
+    )
+    genotype_input = input_path
+    if variant_plan.has_duplicates:
+        genotype_input = outdir / "input.variants_resolved.fasta"
+        hcv_cluster_prep.write_fasta_records(variant_plan.records, genotype_input)
+        repeats = sum(1 for v in variant_plan.variants if v.status == "dropped_identical_repeat")
+        mixed = variant_plan.mixed_sample_ids()
+        print(
+            f"NOTE: repeated FASTA IDs found. {len(mixed)} sample(s) have distinct sequences "
+            f"(renamed ID{hcv_cluster_variants.VARIANT_SEPARATOR}1, "
+            f"ID{hcv_cluster_variants.VARIANT_SEPARATOR}2, ...); {repeats} identical repeat(s) dropped. "
+            f"Same-genotype variants are reduced to one per sample by {args.duplicate_selection}. "
+            f"Details: {hcv_cluster_variants.VARIANTS_FILENAME}"
+        )
 
     # --- Genotyping ---
     print(f"Checking subtypes for: {input_path}")
 
     genotype_argv = [
-        "--input", str(input_path),
+        "--input", str(genotype_input),
         "--output-csv", str(genotype_csv),
         "--outdir", str(genotype_fasta_dir),
         "--panel-fasta", str(args.panel_fasta),
@@ -340,6 +720,7 @@ def command_run(args: argparse.Namespace) -> int:
         return rc
 
     genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
+    hcv_cluster_variants.record_genotypes(variant_plan, genotype_rows)
     genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
     if args.genotype:
         requested = set(args.genotype)
@@ -381,11 +762,18 @@ def command_run(args: argparse.Namespace) -> int:
             "way. Prefer the p-distance default for anything reportable."
         )
     if args.threshold is None and not region_threshold_is_evidence_based(args.region):
-        print(
-            f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
-            f"using the core-E2 default ({FALLBACK_THRESHOLD:.3g}) as a starting point. "
-            "See docs/threshold_rationale.md and consider passing --threshold explicitly."
-        )
+        if region_threshold_is_explicit(args.region):
+            print(
+                f"NOTE: the {resolve_threshold(args.region, None):.3g} default for region "
+                f"'{args.region}' is a conservative operational convention, not a "
+                "region-validated cutoff. Sensitivity analysis is recommended."
+            )
+        else:
+            print(
+                f"WARNING: no HCV-specific clustering threshold evidence for region '{args.region}'; "
+                f"using {FALLBACK_THRESHOLD:.3g} as a provisional fallback. "
+                "See docs/threshold_rationale.md and consider passing --threshold explicitly."
+            )
     print()
 
     cluster_tables: list[tuple[str, Path]] = []
@@ -457,6 +845,18 @@ def command_run(args: argparse.Namespace) -> int:
             print(f"--> {qc_st['total']} sequences, {qc_st['passed']} passed QC ({pct})")
 
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
+        if variant_plan.has_duplicates:
+            dropped = hcv_cluster_variants.select_same_genotype(
+                variant_plan, genotype, qc_path, args.duplicate_selection
+            )
+            if dropped:
+                hcv_cluster_variants.remove_from_fasta(
+                    clustering_fasta, {variant.sequence_id for variant in dropped}
+                )
+                print(
+                    f"--> {len(dropped)} same-sample variant(s) dropped in favour of a "
+                    f"better sequence ({args.duplicate_selection})"
+                )
 
         if args.distance in ("tn93", "both"):
             threshold = resolve_threshold(args.region, args.threshold, distance="tn93")
@@ -501,10 +901,6 @@ def command_run(args: argparse.Namespace) -> int:
                 f"{cl_st['n_multi']} cluster(s), {cl_st['singletons']} singleton(s), "
                 f"largest: {cl_st['largest']}"
             )
-            _render_cluster_plot(
-                args.plot_network, args.plot_hide_singletons, genotype_dir, clusters_csv, links_csv, ""
-            )
-
         if args.distance in ("snp", "both"):
             snp_threshold = resolve_threshold(args.region, args.threshold, distance="snp")
             snp_csv = genotype_dir / "snp.csv"
@@ -546,23 +942,36 @@ def command_run(args: argparse.Namespace) -> int:
                 f"largest: {snp_st['largest']}"
             )
             print(f"          {_snp_count_summary(snp_links)}")
-            snp_file_prefix = "" if args.distance == "snp" else "snp_"
-            _render_cluster_plot(
-                args.plot_network,
-                args.plot_hide_singletons,
-                genotype_dir,
-                snp_clusters_csv,
-                snp_links_csv,
-                snp_file_prefix,
-            )
-
         print()
 
-    hcv_workflow.merge_cluster_tables(cluster_tables, outdir / "clusters.csv")
-    hcv_workflow.merge_link_tables(link_tables, outdir / "links.csv")
+    primary_clusters_csv = outdir / "clusters.csv"
+    primary_links_csv = outdir / "links.csv"
+    hcv_workflow.merge_cluster_tables(cluster_tables, primary_clusters_csv)
+    hcv_workflow.merge_link_tables(link_tables, primary_links_csv)
     if args.distance == "both":
-        hcv_workflow.merge_cluster_tables(snp_cluster_tables, outdir / "clusters.snp.csv")
-        hcv_workflow.merge_link_tables(snp_link_tables, outdir / "links.snp.csv")
+        snp_clusters_csv = outdir / "clusters.snp.csv"
+        snp_links_csv = outdir / "links.snp.csv"
+        hcv_workflow.merge_cluster_tables(snp_cluster_tables, snp_clusters_csv)
+        hcv_workflow.merge_link_tables(snp_link_tables, snp_links_csv)
+    merged_cluster_tables = [primary_clusters_csv]
+    if args.distance == "both":
+        merged_cluster_tables.append(outdir / "clusters.snp.csv")
+    for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables] + merged_cluster_tables:
+        hcv_cluster_variants.annotate_cluster_table(clusters_path, variant_plan)
+    if variant_plan.has_duplicates:
+        hcv_cluster_variants.write_variants_csv(
+            variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME
+        )
+
+    _render_requested_plots(
+        args,
+        outdir,
+        metadata_rows,
+        cluster_tables,
+        link_tables,
+        snp_cluster_tables,
+        snp_link_tables,
+    )
 
     print(f"Done. Results written to: {outdir}")
     return 0
@@ -623,14 +1032,24 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         help="Output directory (default: results)",
     )
     run_parser.add_argument(
+        "--metadata",
+        metavar="CSV",
+        type=Path,
+        default=None,
+        help=(
+            "Optional sample metadata CSV keyed by sample_id. Normalized metadata is "
+            "saved as metadata.csv in the results directory."
+        ),
+    )
+    run_parser.add_argument(
         "-t", "--threshold",
         metavar="FLOAT",
         type=float,
         default=None,
         help=(
             "Maximum distance for cluster linking. Default: region-dependent "
-            "(0.03 for core-e2-nohvr1, the default region; 0.045 for core-e2 "
-            "with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
+            "(0.03 for e1-e2, the default region, and e1-e2-nohvr1; 0.045 for "
+            "core-e2 with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
             "see docs/threshold_rationale.md)."
         ),
     )
@@ -656,12 +1075,12 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "-r", "--region",
         metavar="EXPR",
-        default="core-e2-nohvr1",
+        default="e1-e2",
         help=(
-            "Reference-anchored region expression (default: core-e2-nohvr1, i.e. "
-            "Core-through-E2 with HVR1 masked — see docs/threshold_rationale.md). "
+            "Reference-anchored region expression (default: e1-e2, i.e. full "
+            "E1-through-E2 with HVR1 included — see docs/threshold_rationale.md). "
             "Individual regions: core e1 e2 p7 ns2 ns3 ns4a ns4b ns5a ns5b. "
-            "core-e2 is the same span with HVR1 included. "
+            "Append -nohvr1 to e1-e2 or core-e2 to mask the first 81 nt of E2. "
             "Named presets: structural (=core-e2-nohvr1), envelope (=e1-e2), "
             "nonstructural (=ns2-ns5b), cds (whole coding sequence). "
             "Range syntax: first-last selects all regions from first through last "
@@ -693,25 +1112,42 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         help=adv("Restrict processing to this genotype after auto-detection. May be repeated."),
     )
     run_parser.add_argument(
+        "--duplicate-selection",
+        choices=hcv_cluster_variants.SELECTION_MODES,
+        default="region-coverage",
+        help=(
+            "When one FASTA ID has several distinct sequences with the same genotype, keep "
+            "only the one with the best clustering-region coverage (ties: most complete), "
+            "or only the most complete. Variants of different genotypes are all kept. "
+            "(default: region-coverage)"
+        ),
+    )
+    run_parser.add_argument(
         "--min-coverage",
         metavar="FLOAT",
         type=float,
-        default=0.8,
-        help=adv("Minimum non-gap non-N selected-region coverage fraction (default: 0.8)"),
+        default=0.7,
+        help=adv("Minimum non-gap non-N selected-region coverage fraction (default: 0.7)"),
     )
     run_parser.add_argument(
         "--min-identity",
         metavar="FLOAT",
         type=float,
         default=0.75,
-        help=adv("Minimum minimap2 alignment identity for genotype pass (default: 0.75)"),
+        help=adv(
+            "Minimum minimap2 gap-compressed identity for genotype pass "
+            "(default: 0.75)"
+        ),
     )
     run_parser.add_argument(
         "--min-query-coverage",
         metavar="FLOAT",
         type=float,
         default=0.50,
-        help=adv("Minimum minimap2 query coverage fraction for genotype pass (default: 0.50)"),
+        help=adv(
+            "Minimum fraction of callable (non-N) query bases aligned for genotype pass "
+            "after combining compatible split alignments (default: 0.50)"
+        ),
     )
     run_parser.add_argument(
         "--panel-fasta",
@@ -729,8 +1165,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--minimap2-preset",
         metavar="STR",
-        default="asm10",
-        help=adv("minimap2 preset (default: asm10)"),
+        default="asm20",
+        help=adv("minimap2 preset (default: asm20)"),
     )
     run_parser.add_argument(
         "--extra-minimap2-args",
@@ -869,12 +1305,103 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--plot-network",
         metavar="CHOICE",
-        choices=("none", "png", "html", "both"),
+        choices=("none", "png", "html", "svg", "both", "all"),
         default="none",
         help=adv(
-            "Render a cluster network plot per genotype (and metric, if --distance both) "
-            "into by_genotype/<genotype>/. png: static image. html: interactive, opens in a "
-            "browser. both: write both. Default: none."
+            "Render cluster network plots. png: static image. html: interactive. svg: "
+            "editable vector image. both: PNG+HTML (backward compatible). all: PNG+HTML+SVG. "
+            "Default: none."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-scope",
+        metavar="CHOICE",
+        choices=("per-genotype", "combined", "both"),
+        default="per-genotype",
+        help=adv(
+            "Plot each genotype separately (default), all genotypes in one presentation-only "
+            "network, or both. Combined plots never add cross-genotype links."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-combined-layout",
+        metavar="CHOICE",
+        choices=("packed", "by-genotype"),
+        default="packed",
+        help=adv(
+            "Combined-network layout: compact connected-component packing (default), or "
+            "spatially group packed components by genotype."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-node-spacing",
+        metavar="CHOICE",
+        choices=("compact", "normal", "expanded"),
+        default="normal",
+        help=adv(
+            "Minimum collision-aware node separation: compact, normal (default), or expanded"
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-color-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Metadata field encoded as node colour"),
+    )
+    run_parser.add_argument(
+        "--plot-symbol-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as node shape"),
+    )
+    run_parser.add_argument(
+        "--plot-size-by",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Numeric or intrinsically ordered metadata field encoded as node size; use "
+            "--plot-size-order for other categorical fields"
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-size-order",
+        action="append",
+        metavar="VALUE",
+        default=None,
+        help=adv(
+            "Category order from smallest to largest for --plot-size-by; repeat once per value"
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-outline-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as node outline colour"),
+    )
+    run_parser.add_argument(
+        "--plot-center-by",
+        metavar="FIELD",
+        default=None,
+        help=adv("Low-cardinality metadata field encoded as a small centre mark"),
+    )
+    run_parser.add_argument(
+        "--plot-small-multiple-field",
+        action="append",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Render the same network in a colour panel for this metadata field; repeat for "
+            "up to four fields. Cannot be combined with composite node encodings."
+        ),
+    )
+    run_parser.add_argument(
+        "--plot-hover-field",
+        action="append",
+        metavar="FIELD",
+        default=None,
+        help=adv(
+            "Metadata field included in interactive hover text; repeat for multiple fields. "
+            "Defaults to all supplied metadata; sample_id is always included."
         ),
     )
     run_parser.add_argument(

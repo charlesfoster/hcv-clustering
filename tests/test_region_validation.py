@@ -12,6 +12,7 @@ def test_validate_region_syntax_accepts_range() -> None:
 def test_validate_region_syntax_accepts_preset() -> None:
     assert hcv_cluster_prep.validate_region_syntax("core-e2") is None
     assert hcv_cluster_prep.validate_region_syntax("core-e2-nohvr1") is None
+    assert hcv_cluster_prep.validate_region_syntax("e1-e2-nohvr1") is None
     assert hcv_cluster_prep.validate_region_syntax("structural") is None
     assert hcv_cluster_prep.validate_region_syntax("cds") is None
 

@@ -30,3 +30,6 @@ results_*/
 
 # Claude Code project directory
 .claude/
+
+# other
+.qc_summary_build/

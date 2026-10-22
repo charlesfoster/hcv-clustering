@@ -1377,10 +1377,16 @@ def validate_input_genotypes(
     force_download: bool,
     email: str | None,
     logger: logging.Logger,
-) -> None:
+) -> dict[str, str]:
+    """Check sequences against the subtype they were assigned.
+
+    Returns ``{header: reason}`` for sequences that conflict and should be excluded from
+    this subtype's analysis. A header ``genotype=`` tag that disagrees with the requested
+    genotype is a malformed-input error and still aborts.
+    """
     if mode == "none":
         logger.warning("Skipping sequence-level genotype validation")
-        return
+        return {}
 
     header_values = {record.header: genotype_from_header(record.header) for record in records}
     present = {header: value for header, value in header_values.items() if value is not None}
@@ -1402,7 +1408,7 @@ def validate_input_genotypes(
                 f"FASTA header genotype metadata does not match --genotype {requested_genotype}: {preview}"
             )
         logger.info("Validated genotype %s from FASTA header metadata", requested_genotype)
-        return
+        return {}
 
     if mode == "headers":
         raise HcvPrepError(
@@ -1410,7 +1416,7 @@ def validate_input_genotypes(
             "'sample genotype=1a' or choose --genotype-validation kmer/auto/none."
         )
 
-    validate_genotypes_by_kmer(
+    return validate_genotypes_by_kmer(
         records=records,
         requested_genotype=requested_genotype,
         kmer_size=kmer_size,
@@ -1431,7 +1437,7 @@ def validate_genotypes_by_kmer(
     force_download: bool,
     email: str | None,
     logger: logging.Logger,
-) -> None:
+) -> dict[str, str]:
     if kmer_size < 8:
         raise HcvPrepError("--genotype-validation-kmer-size must be at least 8")
 
@@ -1441,11 +1447,11 @@ def validate_genotypes_by_kmer(
         ref_records = read_fasta_records(bundle.fasta_path)
         reference_kmers[spec.genotype] = dna_kmers(ref_records[0].sequence, kmer_size)
 
-    failures: list[str] = []
+    failures: dict[str, str] = {}
     for record in records:
         query_kmers = dna_kmers(record.sequence, kmer_size)
         if len(query_kmers) < 20:
-            failures.append(f"{record.header}: too few unambiguous {kmer_size}-mers")
+            failures[record.header] = f"too few unambiguous {kmer_size}-mers to confirm the subtype"
             continue
 
         scores = {
@@ -1456,19 +1462,19 @@ def validate_genotypes_by_kmer(
         requested_score = scores.get(requested_genotype, 0.0)
         margin = best_score - requested_score
         if best_genotype != requested_genotype and margin >= 0.005 and best_score >= 0.02:
-            failures.append(
-                f"{record.header}: closest={best_genotype} "
-                f"({best_score:.3f}), requested={requested_genotype} ({requested_score:.3f})"
+            failures[record.header] = (
+                f"{kmer_size}-mer match is closer to {best_genotype} ({best_score:.3f}) "
+                f"than to assigned {requested_genotype} ({requested_score:.3f})"
             )
 
     if failures:
-        preview = "; ".join(failures[:10])
-        raise HcvPrepError(
-            "Genotype validation failed. Do not align mixed genotypes in one run. "
-            f"{preview}"
+        logger.warning(
+            "Excluding %s sequence(s) whose %s-mer profile conflicts with genotype %s",
+            len(failures), kmer_size, requested_genotype,
         )
-
-    logger.info("Validated genotype %s by %s-mer comparison to reference anchors", requested_genotype, kmer_size)
+    else:
+        logger.info("Validated genotype %s by %s-mer comparison to reference anchors", requested_genotype, kmer_size)
+    return failures
 
 
 def dna_kmers(sequence: str, k: int) -> set[str]:
@@ -2110,6 +2116,14 @@ def write_outputs(
         logger.warning("No sequences passed the %.3f selected-region coverage threshold", min_coverage)
 
 
+def write_genotype_validation_csv(rejected: dict[str, str], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(("sample_id", "reason"))
+        writer.writerows(rejected.items())
+
+
 def write_qc_csv(rows: list[dict[str, str | int | float | bool]], path: Path) -> None:
     fieldnames = [
         "sample_id",
@@ -2209,7 +2223,7 @@ def command_prep_align(args: argparse.Namespace) -> int:
     normalized_records = normalize_input_records(records, logger)
     logger.info("Read %s unique input sequences from %s", len(normalized_records), input_path)
 
-    validate_input_genotypes(
+    rejected = validate_input_genotypes(
         records=normalized_records,
         requested_genotype=spec.genotype,
         mode=args.genotype_validation,
@@ -2220,6 +2234,18 @@ def command_prep_align(args: argparse.Namespace) -> int:
         email=args.ncbi_email,
         logger=logger,
     )
+
+    validation_path = Path(f"{out_prefix}.genotype_validation.csv")
+    if validation_path.exists():
+        validation_path.unlink()  # never leave a previous run's exclusions behind
+    if rejected:
+        write_genotype_validation_csv(rejected, validation_path)
+        normalized_records = [r for r in normalized_records if r.header not in rejected]
+        if not normalized_records:
+            write_fasta_records([], Path(f"{out_prefix}.clustering.fasta"))
+            write_qc_csv([], Path(f"{out_prefix}.qc.csv"))
+            logger.warning("Every sequence was excluded by genotype validation; nothing to align")
+            return 0
 
     cached_reference: str | None = None
     query_alignment: dict[str, str] = {}

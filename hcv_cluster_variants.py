@@ -207,17 +207,19 @@ def record_genotypes(plan: VariantPlan, genotype_rows: Iterable[Mapping[str, str
             variant.detail = (row.get("qc_fail_reason") or "").strip()
 
 
-def _read_region_coverage(qc_path: Path) -> dict[str, float]:
-    coverage: dict[str, float] = {}
+def _read_region_qc(qc_path: Path) -> dict[str, tuple[bool, float]]:
+    """Map sequence ID to (passed region QC, region coverage) from a prep qc.csv."""
+    qc: dict[str, tuple[bool, float]] = {}
     if not qc_path.exists():
-        return coverage
+        return qc
     with qc_path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             try:
-                coverage[row["sample_id"]] = float(row.get("coverage_fraction") or 0)
+                coverage = float(row.get("coverage_fraction") or 0)
             except ValueError:
-                coverage[row["sample_id"]] = 0.0
-    return coverage
+                coverage = 0.0
+            qc[row["sample_id"]] = ((row.get("passed_qc") or "").strip() == "true", coverage)
+    return qc
 
 
 def select_same_genotype(
@@ -226,15 +228,21 @@ def select_same_genotype(
     qc_path: Path,
     mode: str,
 ) -> list[VariantRecord]:
-    """Keep one variant per sample within ``genotype``; return the variants dropped."""
+    """Keep one variant per sample within ``genotype``; return the variants dropped.
+
+    Only variants that passed region QC compete: a variant that fails QC is already
+    excluded, and must not be able to displace a usable one. If none passes, none is
+    dropped here (all are reported as failing region QC).
+    """
     if mode not in SELECTION_MODES:
         raise ValueError(f"Unknown duplicate selection mode: {mode}")
-    coverage = _read_region_coverage(qc_path)
+    qc = _read_region_qc(qc_path)
     groups: dict[str, list[VariantRecord]] = {}
     for variant in plan.variants:
         if variant.status == "kept" and variant.genotype == genotype:
-            variant.region_coverage = coverage.get(variant.sequence_id, 0.0)
-            groups.setdefault(variant.sample_id, []).append(variant)
+            passed, variant.region_coverage = qc.get(variant.sequence_id, (False, 0.0))
+            if passed:  # coverage is recorded for every variant, but only usable ones compete
+                groups.setdefault(variant.sample_id, []).append(variant)
 
     dropped: list[VariantRecord] = []
     for group in groups.values():

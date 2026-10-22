@@ -18,6 +18,7 @@ import plotly.colors
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from hcv_cluster_labels import UNASSIGNED
 from hcv_cluster_metadata import AGE_RANGE_ORDER, MISSING_VALUE
 
 PositionMap = dict[str, tuple[float, float]]
@@ -36,6 +37,36 @@ _SPACING_CONFIG = {
     "normal": (0.18, 0.75),
     "expanded": (0.28, 1.20),
 }
+
+
+def persistent_label_map(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """Map sample_id to its saved persistent cluster label, where it has one."""
+    return {
+        str(row["sample_id"]): str(row["cluster_label"])
+        for row in rows
+        if row.get("cluster_label") and row["cluster_label"] != UNASSIGNED
+    }
+
+
+def apply_persistent_labels(
+    node_rows: Iterable[Mapping[str, Any]], labels: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Name clusters by their persistent label in plots instead of the run-local ID.
+
+    ``labels`` supplies labels for tables that lack a ``cluster_label`` column (the
+    per-genotype tables). Singletons and not-yet-saved clusters keep their run-local ID,
+    which is unique per component; persistent labels are unique per cluster too, so
+    grouping by ``cluster_id`` is unaffected.
+    """
+    labels = labels or {}
+    out = []
+    for source in node_rows:
+        row = dict(source)
+        label = row.pop("cluster_label", "") or labels.get(str(row["sample_id"]), "")
+        if label and label != UNASSIGNED:
+            row["cluster_id"] = label
+        out.append(row)
+    return out
 
 
 def filter_singletons(

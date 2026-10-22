@@ -24,6 +24,7 @@ RESERVED_METADATA_COLUMNS = frozenset(
     {
         "genotype",
         "cluster_id",
+        "cluster_label",
         "source_cluster_id",
         "cluster_size",
         "source",
@@ -31,6 +32,8 @@ RESERVED_METADATA_COLUMNS = frozenset(
         "distance",
         "base_sample_id",
         "mixed_infection",
+        "overall_status",
+        "failed_stage",
     }
 )
 

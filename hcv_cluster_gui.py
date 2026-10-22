@@ -271,6 +271,26 @@ def _run_tab() -> None:
             )
     outdir = Path(st.text_input("Output directory", value="results_gui"))
 
+    label_col1, label_col2 = st.columns(2)
+    with label_col1:
+        registry_raw = st.text_input(
+            "Cluster label registry (optional)",
+            value="",
+            help=(
+                "Directory holding persistent cluster labels (e.g. HCV-2608-001) that are "
+                "reused between runs. Leave blank to use run-local cluster IDs only."
+            ),
+        )
+    with label_col2:
+        update_registry = st.checkbox(
+            "Save labels to the registry",
+            disabled=not registry_raw.strip(),
+            help=(
+                "Name new clusters and record merges/splits. Leave off for exploratory "
+                "runs: new clusters then show as UNASSIGNED and the registry is not changed."
+            ),
+        )
+
     region, region_error = _region_picker()
 
     col1, col2, col3 = st.columns(3)
@@ -519,6 +539,10 @@ def _run_tab() -> None:
             ]
             if threshold is not None:
                 argv.extend(["--threshold", str(threshold)])
+            if registry_raw.strip():
+                argv.extend(["--registry", registry_raw.strip()])
+                if update_registry:
+                    argv.append("--update-registry")
             if verbose:
                 argv.append("--verbose")
             if dry_run:
@@ -644,6 +668,14 @@ def _render_results(outdir: Path, distance: str) -> None:
     if not node_rows:
         st.info("No sequences passed QC for this network scope.")
         return
+    if not (distance == "both" and view["metric"] == "snp"):
+        # Persistent labels belong to the primary metric's merged table; per-genotype
+        # tables borrow them from it.
+        node_rows = hcv_cluster_viz.apply_persistent_labels(
+            node_rows, hcv_cluster_viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
+        )
+    else:
+        node_rows = hcv_cluster_viz.apply_persistent_labels(node_rows)
 
     if scope != "All genotypes":
         for row in node_rows:
@@ -863,7 +895,7 @@ def _render_results(outdir: Path, distance: str) -> None:
     # while users switch repeatedly between combined and per-genotype views.
     metadata_field_names = set(hcv_cluster_metadata.metadata_fields(metadata_rows))
     all_genotype_rows = (
-        _read_csv_rows(outdir / "clusters.csv")
+        hcv_cluster_viz.apply_persistent_labels(_read_csv_rows(outdir / "clusters.csv"))
         if (outdir / "clusters.csv").exists()
         else []
     )

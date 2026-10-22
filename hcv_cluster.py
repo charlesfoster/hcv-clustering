@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import datetime
 import logging
 import os
 import sys
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import assign_hcv_genotypes_from_fasta
+import hcv_cluster_audit
+import hcv_cluster_labels
 import hcv_cluster_metadata
 import hcv_cluster_prep
 import hcv_cluster_variants
@@ -251,6 +254,11 @@ def _read_cluster_stats(clusters_path: Path) -> dict[str, int]:
     return {"total": len(rows), "singletons": singletons, "n_multi": len(multi_ids), "largest": largest}
 
 
+def _fasta_has_records(path: Path) -> bool:
+    with path.open(encoding="utf-8") as handle:
+        return any(line.startswith(">") for line in handle)
+
+
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
@@ -328,8 +336,11 @@ def _prepare_plot_rows(
     genotype: str | None,
     hide_singletons: bool,
     metadata_rows: Sequence[Mapping[str, Any]],
+    cluster_labels: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    node_rows: list[dict[str, Any]] = _read_csv_rows(clusters_csv)
+    node_rows: list[dict[str, Any]] = hcv_cluster_viz.apply_persistent_labels(
+        _read_csv_rows(clusters_csv), cluster_labels
+    )
     edge_rows: list[dict[str, Any]] = _read_csv_rows(links_csv)
     for row in node_rows:
         if genotype is not None:
@@ -363,6 +374,7 @@ def _render_cluster_plot(
     combined_layout: str | None = None,
     node_spacing: str = "normal",
     encoding_maps: Mapping[str, Mapping[str, str]] | None = None,
+    cluster_labels: Mapping[str, str] | None = None,
 ) -> None:
     if plot_network == "none":
         return
@@ -372,6 +384,7 @@ def _render_cluster_plot(
         genotype=genotype,
         hide_singletons=hide_singletons,
         metadata_rows=metadata_rows,
+        cluster_labels=cluster_labels,
     )
     if not node_rows:
         return
@@ -524,16 +537,21 @@ def _render_requested_plots(
             )
         )
 
+    # Persistent labels are tracked for the primary metric only; its per-genotype tables
+    # carry no label column, so they borrow the labels from the merged table.
+    primary_labels = hcv_cluster_viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
+
     # Build mappings from the union of every plotted metric so categories keep the
     # same colour/shape/outline as users switch plots.
     union_by_sample: dict[str, dict[str, Any]] = {}
-    for _prefix, _clusters, _links, merged_clusters, merged_links in metric_tables:
+    for prefix, _clusters, _links, merged_clusters, merged_links in metric_tables:
         metric_nodes, _metric_edges = _prepare_plot_rows(
             merged_clusters,
             merged_links,
             genotype=None,
             hide_singletons=args.plot_hide_singletons,
             metadata_rows=metadata_rows,
+            cluster_labels=primary_labels if not prefix else None,
         )
         for row in metric_nodes:
             union_by_sample.setdefault(str(row["sample_id"]), row)
@@ -588,6 +606,7 @@ def _render_requested_plots(
                     links_by_genotype[genotype],
                     file_prefix,
                     genotype=genotype,
+                    cluster_labels=primary_labels if not file_prefix else None,
                     **render_options,
                 )
         if args.plot_scope in ("combined", "both"):
@@ -599,8 +618,166 @@ def _render_requested_plots(
                 merged_links,
                 file_prefix,
                 combined_layout=args.plot_combined_layout,
+                cluster_labels=primary_labels if not file_prefix else None,
                 **render_options,
             )
+
+
+def _label_track(args: argparse.Namespace) -> str:
+    """The primary metric drives the cluster tables, so it is the tracked clustering."""
+    return "snp" if args.distance == "snp" else "tn93"
+
+
+def _label_definition(args: argparse.Namespace) -> dict[str, object]:
+    """What a persistent label is valid for: changing any of this changes who clusters."""
+    track = _label_track(args)
+    definition: dict[str, object] = {
+        "metric": track,
+        "region": canonical_threshold_region(args.region),
+        "threshold": resolve_threshold(args.region, args.threshold, distance=track),
+    }
+    definition["region_strategy"] = args.region_strategy
+    if track == "snp" and args.snp_count_threshold is not None:
+        definition["snp_count_threshold"] = args.snp_count_threshold
+    if track == "tn93":
+        definition.update(
+            ambiguities=args.ambiguities,
+            ambiguity_fraction=args.ambiguity_fraction,
+            min_overlap=args.min_overlap,
+            extra_tn93_args=args.extra_tn93_args,
+        )
+    return definition
+
+
+def _check_label_options(args: argparse.Namespace) -> None:
+    """Fail before any pipeline work if the registry cannot be used for this run."""
+    if args.update_registry and args.registry is None:
+        raise ValueError("--update-registry requires --registry")
+    if args.label_date is not None:
+        try:
+            args.label_date = datetime.date.fromisoformat(args.label_date).isoformat()
+        except ValueError:
+            raise ValueError(f"--label-date must be YYYY-MM-DD, got {args.label_date!r}") from None
+    if args.registry is not None and args.registry.is_dir():
+        hcv_cluster_labels.load_registry(args.registry).check_definition(
+            _label_track(args), _label_definition(args)
+        )
+
+
+def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: Path) -> None:
+    """Add persistent ``cluster_label`` to the merged cluster table and write label reports."""
+    with clusters_csv.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or ())
+        rows = list(reader)
+    partition = {
+        (row["genotype"], row.get(hcv_cluster_variants.BASE_SAMPLE_FIELD) or row["sample_id"]): row[
+            "cluster_id"
+        ]
+        for row in rows
+    }
+    now = datetime.datetime.now()
+    result, table, _registry = hcv_cluster_labels.label_run(
+        args.registry,
+        _label_track(args),
+        _label_definition(args),
+        partition,
+        run_id=now.strftime("%Y%m%dT%H%M%S"),
+        run_date=args.label_date or now.strftime("%Y-%m-%d"),
+        outdir=str(outdir),
+        commit=args.update_registry,
+        prefix=args.label_prefix,
+    )
+    if "cluster_label" not in fieldnames:
+        fieldnames.insert(fieldnames.index("cluster_id") + 1, "cluster_label")
+    for row in rows:
+        member = (row["genotype"], row.get(hcv_cluster_variants.BASE_SAMPLE_FIELD) or row["sample_id"])
+        row["cluster_label"] = result.labels[member]
+    with clusters_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    label_fields = ["label", "track", "genotype", "created_date", "split_from",
+                    "absorbed_labels", "n_members_this_run", "n_members_total"]
+    with (outdir / "cluster_labels.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=label_fields, restval="")
+        writer.writeheader()
+        writer.writerows(table)
+    event_fields = ["run_id", "date", "track", "event", "label", "related_label", "detail"]
+    with (outdir / "label_changes.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=event_fields)
+        writer.writeheader()
+        writer.writerows(result.events)
+
+    counts = {kind: sum(1 for e in result.events if e["event"] == kind) for kind in ("created", "split", "merged")}
+    labelled = [member for member, label in result.labels.items() if label]
+    summary = (
+        f"Cluster labels: {len({partition[member] for member in labelled})} labelled cluster(s) "
+        f"covering {len(labelled)} sequence(s); {counts['created'] + counts['split']} new, "
+        f"{counts['merged']} merged"
+    )
+    if args.update_registry:
+        print(f"{summary}. Registry updated: {args.registry}")
+    else:
+        print(
+            f"{summary}. Registry NOT updated (read-only); new clusters are shown as "
+            f"{hcv_cluster_labels.UNASSIGNED}. Re-run with --update-registry to name them."
+        )
+
+
+def _write_sample_outputs(
+    args: argparse.Namespace,
+    outdir: Path,
+    input_records: Sequence[hcv_cluster_prep.FastaRecord],
+    variant_plan: hcv_cluster_variants.VariantPlan,
+    genotype_rows: Sequence[Mapping[str, str]],
+    metadata_rows: Sequence[Mapping[str, Any]],
+    *,
+    excluded_subtypes: Mapping[str, str] | None = None,
+    qc_by_genotype: Mapping[str, Mapping[str, Mapping[str, str]]] | None = None,
+    validation_failures: Mapping[str, Mapping[str, str]] | None = None,
+    cluster_rows: Sequence[Mapping[str, str]] = (),
+) -> None:
+    """Write the per-sample audit, annotated metadata tables and labelled survivor FASTA.
+
+    Also called when the run stops early (e.g. nothing passed genotyping), because that
+    is exactly when the explanation of what happened to each sample matters most.
+    """
+    audits = hcv_cluster_audit.build_audit(
+        input_records,
+        variant_plan,
+        genotype_rows,
+        min_query_coverage=args.min_query_coverage,
+        min_identity=args.min_identity,
+        min_coverage=args.min_coverage,
+        excluded_subtypes=excluded_subtypes,
+        qc_by_genotype=qc_by_genotype,
+        validation_failures=validation_failures,
+        cluster_rows=cluster_rows,
+    )
+    hcv_cluster_audit.write_audit_csv(audits, outdir / hcv_cluster_audit.AUDIT_FILENAME)
+    hcv_cluster_audit.write_metadata_tables(
+        audits,
+        metadata_rows,
+        outdir / hcv_cluster_audit.METADATA_ALL_FILENAME,
+        outdir / hcv_cluster_audit.METADATA_SURVIVING_FILENAME,
+    )
+    hcv_cluster_audit.write_surviving_fasta(
+        audits, variant_plan.records, outdir / hcv_cluster_audit.SURVIVING_FASTA_FILENAME
+    )
+    print(f"Sample audit: {hcv_cluster_audit.summarize(audits)} ({hcv_cluster_audit.AUDIT_FILENAME})")
+    absent = sorted(
+        {str(row["sample_id"]) for row in metadata_rows}.difference(
+            audit.base_sample_id for audit in audits
+        )
+    )
+    if absent:
+        print(
+            f"NOTE: metadata has {len(absent)} sample(s) not present in the input FASTA: "
+            f"{_summarize_ids(absent)}",
+            file=sys.stderr,
+        )
 
 
 def command_run(args: argparse.Namespace) -> int:
@@ -612,6 +789,7 @@ def command_run(args: argparse.Namespace) -> int:
         hcv_cluster_metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
     )
     _validate_plot_fields(args, metadata_rows)
+    _check_label_options(args)
 
     if args.dry_run:
         genotype_argv_display = [
@@ -678,9 +856,8 @@ def command_run(args: argparse.Namespace) -> int:
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
 
     # --- Repeated FASTA IDs (e.g. mixed infections) ---
-    variant_plan = hcv_cluster_variants.resolve_duplicate_ids(
-        hcv_cluster_variants.read_input_records(input_path)
-    )
+    input_records = hcv_cluster_variants.read_input_records(input_path)
+    variant_plan = hcv_cluster_variants.resolve_duplicate_ids(input_records)
     genotype_input = input_path
     if variant_plan.has_duplicates:
         genotype_input = outdir / "input.variants_resolved.fasta"
@@ -722,10 +899,22 @@ def command_run(args: argparse.Namespace) -> int:
     genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
     hcv_cluster_variants.record_genotypes(variant_plan, genotype_rows)
     genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
+    excluded_subtypes: dict[str, str] = {}
     if args.genotype:
         requested = set(args.genotype)
+        excluded_subtypes.update(
+            {
+                genotype: f"Subtype {genotype} excluded by --genotype ({', '.join(args.genotype)})"
+                for genotype in genotypes
+                if genotype not in requested
+            }
+        )
         genotypes = [genotype for genotype in genotypes if genotype in requested]
     if not genotypes:
+        _write_sample_outputs(
+            args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
+            excluded_subtypes=excluded_subtypes,
+        )
         raise RuntimeError("No passing genotype assignments were available to process")
 
     # A detected subtype with no configured reference must not abort the whole run and
@@ -743,8 +932,21 @@ def command_run(args: argparse.Namespace) -> int:
             "these sequences are skipped. Supply one with --reference-map to include them.",
             file=sys.stderr,
         )
+        excluded_subtypes.update(
+            {
+                genotype: (
+                    f"No reference genome configured for subtype {genotype}; "
+                    "supply one with --reference-map"
+                )
+                for genotype in unsupported
+            }
+        )
         genotypes = [genotype for genotype in genotypes if genotype in reference_catalog]
     if not genotypes:
+        _write_sample_outputs(
+            args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
+            excluded_subtypes=excluded_subtypes,
+        )
         raise RuntimeError("No passing genotype assignments have a configured reference genome")
 
     gt_counts = {
@@ -780,6 +982,8 @@ def command_run(args: argparse.Namespace) -> int:
     snp_cluster_tables: list[tuple[str, Path]] = []
     link_tables: list[tuple[str, Path]] = []
     snp_link_tables: list[tuple[str, Path]] = []
+    qc_by_genotype: dict[str, dict[str, dict[str, str]]] = {}
+    validation_failures: dict[str, dict[str, str]] = {}
 
     for genotype in genotypes:
         print(f"Analysing subtype: {genotype}")
@@ -839,6 +1043,16 @@ def command_run(args: argparse.Namespace) -> int:
             return rc
 
         qc_path = Path(f"{prefix}.qc.csv")
+        qc_by_genotype[genotype] = hcv_cluster_audit.read_qc_rows(qc_path)
+        validation_path = Path(f"{prefix}.genotype_validation.csv")
+        validation_failures[genotype] = {
+            row["sample_id"]: row["reason"] for row in _read_csv_rows(validation_path)
+        } if validation_path.exists() else {}
+        if validation_failures[genotype]:
+            print(
+                f"--> {len(validation_failures[genotype])} sequence(s) excluded: their k-mer "
+                f"profile conflicts with subtype {genotype} (see {validation_path.name})"
+            )
         if qc_path.exists():
             qc_st = _read_qc_stats(qc_path)
             pct = f"{qc_st['passed'] / qc_st['total'] * 100:.0f}%" if qc_st["total"] else "n/a"
@@ -857,6 +1071,10 @@ def command_run(args: argparse.Namespace) -> int:
                     f"--> {len(dropped)} same-sample variant(s) dropped in favour of a "
                     f"better sequence ({args.duplicate_selection})"
                 )
+
+        if not _fasta_has_records(clustering_fasta):
+            print(f"--> No sequences left to cluster for subtype {genotype}; skipping\n")
+            continue
 
         if args.distance in ("tn93", "both"):
             threshold = resolve_threshold(args.region, args.threshold, distance="tn93")
@@ -962,6 +1180,17 @@ def command_run(args: argparse.Namespace) -> int:
         hcv_cluster_variants.write_variants_csv(
             variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME
         )
+
+    if args.registry is not None:
+        _apply_cluster_labels(args, outdir, primary_clusters_csv)
+
+    _write_sample_outputs(
+        args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
+        excluded_subtypes=excluded_subtypes,
+        qc_by_genotype=qc_by_genotype,
+        validation_failures=validation_failures,
+        cluster_rows=_read_csv_rows(primary_clusters_csv),
+    )
 
     _render_requested_plots(
         args,
@@ -1110,6 +1339,37 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         action="append",
         metavar="GENOTYPE",
         help=adv("Restrict processing to this genotype after auto-detection. May be repeated."),
+    )
+    run_parser.add_argument(
+        "--registry",
+        metavar="DIR",
+        type=Path,
+        default=None,
+        help=(
+            "Persistent cluster-label registry directory. Clusters of two or more sequences "
+            "keep their label (e.g. HCV-2608-001) across runs; singletons are never labelled. "
+            "Read-only unless --update-registry is given."
+        ),
+    )
+    run_parser.add_argument(
+        "--update-registry",
+        action="store_true",
+        help=(
+            "Save this run's labels to --registry: name new clusters, record merges and "
+            "splits. Leave off for exploratory runs (different thresholds, test data)."
+        ),
+    )
+    run_parser.add_argument(
+        "--label-prefix",
+        metavar="STR",
+        default=hcv_cluster_labels.DEFAULT_PREFIX,
+        help=adv("Prefix for newly created cluster labels (default: HCV)"),
+    )
+    run_parser.add_argument(
+        "--label-date",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help=adv("Naming date for new cluster labels (default: today); sets the YYMM part"),
     )
     run_parser.add_argument(
         "--duplicate-selection",

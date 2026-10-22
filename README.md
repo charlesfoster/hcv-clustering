@@ -323,7 +323,13 @@ results/
       snp_clusters.csv                  SNP-based clusters (if --distance both)
     3a/
       ...
-  clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs
+  sample_audit.csv                      one row per input FASTA record: overall pass/fail, the stage that excluded it, and why
+  metadata.all_samples.csv              pipeline columns (genotype, status, cluster) + your metadata, every analysed sequence
+  metadata.surviving_samples.csv        the same, surviving sequences only
+  surviving_samples.fasta               original sequences of survivors; headers suffixed |genotype|cluster_id
+  clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs (+ cluster_label with --registry)
+  cluster_labels.csv                    labels present in this run (with --registry)
+  label_changes.csv                     labels created, merged or split by this run (with --registry)
   sequence_variants.csv                 repeated FASTA IDs: renames and keep/drop decisions (only if present)
   input.variants_resolved.fasta         input with repeated IDs resolved (only if present)
   clusters.snp.csv                      merged SNP clusters (if --distance both)
@@ -332,6 +338,45 @@ results/
 ```
 
 Cluster IDs in `clusters.csv` are genotype-qualified (e.g. `1a_C0001`, `3a_C0001`) so per-genotype component numbers remain unique after merging. `links.csv` is a plain concatenation of every genotype's edges — sample IDs already match `clusters.csv` directly, since distances are never computed across genotypes (see below), so there's nothing to merge conflict on.
+
+### Persistent cluster labels
+
+Run-local IDs such as `1a_C0001` are renumbered whenever samples are added. For labels that survive between runs (and can anchor reports), point every run at a registry directory:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta -o results --registry label_registry --update-registry
+```
+
+Network plots and the GUI name clusters by their persistent label (singletons and `UNASSIGNED` clusters keep their run-local ID). The GUI run tab has matching registry fields.
+
+Without `--update-registry` the registry is only read: known clusters show their saved label, and clusters that would be newly named show `UNASSIGNED`. Use that for exploratory runs; only commit runs you want reports to be based on.
+
+Labels look like `HCV-2608-001`: the prefix (`--label-prefix`), the **year and month the label was created** (YYMM — *not* when the outbreak began or samples were collected), and a counter within that month. Rules:
+
+- A cluster keeps its label as it grows, even though its run-local ID changes.
+- Singletons are never labelled; a sequence gets a label only once it is within threshold of another sequence.
+- If clusters join, the **oldest** label survives and the others are retired with `merged_into` recorded.
+- If a cluster falls apart (samples removed, QC changed), the largest piece keeps the label and the other pieces get new labels with `split_from` recorded.
+- Labels are only valid for the clustering that created them. The registry records the metric, region and threshold, and refuses a run that uses different ones — use a separate registry directory for a different definition.
+- Samples are tracked by FASTA ID (original ID for mixed-infection variants) and genotype. Samples missing from a later run keep their membership.
+
+Registry files (plain CSV, safe to diff or keep in git): `labels.csv`, `membership.csv`, `events.csv` (append-only history of every create/join/merge/split), `runs.csv`, `tracks.csv`. Registries contain sample IDs, so give them the same access controls as the input data. The registry tracks the primary distance metric (TN93 unless `--distance snp`). Other clustering methods can be tracked as separate *tracks* in the same registry, sharing one label numbering, through `hcv_cluster_labels.assign_labels`.
+
+### Sample audit
+
+`sample_audit.csv` accounts for every record in the input FASTA, so a missing sample can always be traced. Each row has `overall_status` (`pass`/`fail`), `failed_stage` and `overall_reason`, followed by a `<stage>_status` / `<stage>_reason` pair for each stage, in the order a sequence meets them:
+
+| Stage | Fails when |
+|---|---|
+| `input` | exact repeat of an earlier record with the same FASTA ID (the first copy is analysed) |
+| `genotyping` | no panel alignment, or callable query coverage / identity below `--min-query-coverage` / `--min-identity` |
+| `subtype` | subtype excluded by `--genotype`, or no reference genome configured for it |
+| `genotype_validation` | the k-mer check finds the sequence closer to a different subtype than the one assigned (only that sample is excluded; a mismatching `genotype=` header tag is still a hard error) |
+| `region_qc` | clustering-region coverage below `--min-coverage` |
+| `variant_selection` | a different same-genotype variant of the same sample was kept (only variants that passed `region_qc` compete; see repeated FASTA IDs) |
+| `clustering` | survivor missing from the cluster table (should not happen) |
+
+A failed stage sets every later stage to `not_run`. Singletons count as survivors: they passed every stage and simply have no sequence within the threshold. The audit is also written when a run stops early (e.g. nothing passes genotyping). The input metadata is split into `metadata.all_samples.csv` and `metadata.surviving_samples.csv`; `metadata.csv` remains the normalized copy of the file you supplied, which the GUI reloads.
 
 ### MicrobeTrace
 

@@ -22,11 +22,10 @@ def test_identical_repeats_are_dropped_and_distinct_sequences_renamed() -> None:
     statuses = {variant.input_record: variant.status for variant in plan.variants}
     assert statuses[3] == "dropped_identical_repeat"
 
-
-def test_unique_input_is_left_untouched() -> None:
-    plan = variants.resolve_duplicate_ids(_records(("a", "ACGT"), ("b", "ACGT")))
-    assert not plan.has_duplicates
-    assert [record.header for record in plan.records] == ["a", "b"]
+    # Unique IDs are left untouched, even when the sequences are identical.
+    unique = variants.resolve_duplicate_ids(_records(("a", "ACGT"), ("b", "ACGT")))
+    assert not unique.has_duplicates
+    assert [record.header for record in unique.records] == ["a", "b"]
 
 
 def test_rename_refuses_to_collide_with_an_existing_id() -> None:
@@ -36,10 +35,16 @@ def test_rename_refuses_to_collide_with_an_existing_id() -> None:
 
 def _qc(path: Path, coverage: dict[str, float]) -> Path:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=("sample_id", "coverage_fraction"))
+        writer = csv.DictWriter(handle, fieldnames=("sample_id", "coverage_fraction", "passed_qc"))
         writer.writeheader()
         for sample_id, value in coverage.items():
-            writer.writerow({"sample_id": sample_id, "coverage_fraction": f"{value:.6f}"})
+            writer.writerow(
+                {
+                    "sample_id": sample_id,
+                    "coverage_fraction": f"{value:.6f}",
+                    "passed_qc": "true" if value >= 0.7 else "false",
+                }
+            )
     return path
 
 
@@ -70,6 +75,13 @@ def test_same_genotype_selection(tmp_path: Path, mode: str, coverage: dict[str, 
     kept = [v.sequence_id for v in plan.variants if v.status == "kept"]
     assert kept == [expected_kept]
     assert len(dropped) == 1
+
+
+def test_variant_failing_region_qc_cannot_displace_a_usable_one(tmp_path: Path) -> None:
+    plan = _same_genotype_plan()  # s__v2 is the more complete sequence
+    qc = _qc(tmp_path / "qc.csv", {"s__v1": 0.8, "s__v2": 0.5})
+    assert variants.select_same_genotype(plan, "1a", qc, "completeness") == []
+    assert [v.status for v in plan.variants] == ["kept", "kept"]
 
 
 def test_metadata_joins_on_base_sample_id() -> None:

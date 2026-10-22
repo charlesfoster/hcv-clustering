@@ -1,23 +1,22 @@
 import csv
 from pathlib import Path
 
+import pytest
+
 import hcv_cluster_prep
 
 
-def test_mask_n_as_gap_replaces_n_only() -> None:
-    assert hcv_cluster_prep.mask_n_as_gap("ACGTNNNNACGT") == "ACGT----ACGT"
-
-
-def test_mask_n_as_gap_is_case_insensitive() -> None:
-    assert hcv_cluster_prep.mask_n_as_gap("ACGTnnnnACGT") == "ACGT----ACGT"
-
-
-def test_mask_n_as_gap_leaves_real_ambiguity_codes_untouched() -> None:
-    assert hcv_cluster_prep.mask_n_as_gap("ACGTRYSWKMACGT") == "ACGTRYSWKMACGT"
-
-
-def test_mask_n_as_gap_leaves_existing_gaps_untouched() -> None:
-    assert hcv_cluster_prep.mask_n_as_gap("AC--NNGT") == "AC----GT"
+@pytest.mark.parametrize(
+    ("sequence", "expected"),
+    [
+        pytest.param("ACGTNNNNACGT", "ACGT----ACGT", id="replaces-n"),
+        pytest.param("ACGTnnnnACGT", "ACGT----ACGT", id="case-insensitive"),
+        pytest.param("ACGTRYSWKMACGT", "ACGTRYSWKMACGT", id="keeps-ambiguity-codes"),
+        pytest.param("AC--NNGT", "AC----GT", id="keeps-existing-gaps"),
+    ],
+)
+def test_mask_n_as_gap(sequence: str, expected: str) -> None:
+    assert hcv_cluster_prep.mask_n_as_gap(sequence) == expected
 
 
 def test_write_outputs_masks_n_in_clustering_fasta_but_not_aligned_fasta(tmp_path: Path) -> None:

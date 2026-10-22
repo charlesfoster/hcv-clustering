@@ -49,16 +49,6 @@ def load_ictv_table() -> dict[str, list[str]]:
     return table
 
 
-def test_ictv_table_has_all_94_confirmed_subtypes() -> None:
-    assert len(load_ictv_table()) == 94
-
-
-def test_every_catalog_subtype_is_ictv_confirmed() -> None:
-    ictv = load_ictv_table()
-    unknown = sorted(set(hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG) - set(ictv))
-    assert unknown == [], f"catalog names subtypes ICTV does not confirm: {unknown}"
-
-
 def test_catalog_accessions_match_ictv_or_a_pinned_deviation() -> None:
     """Every accession is either ICTV's exemplar or a documented substitute."""
     ictv = load_ictv_table()

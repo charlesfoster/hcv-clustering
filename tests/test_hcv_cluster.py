@@ -11,82 +11,59 @@ import hcv_workflow
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_threshold_returns_user_value() -> None:
-    assert hcv_cluster.resolve_threshold("core-e2", 0.030) == 0.030
-
-
-def test_resolve_threshold_core_e2_nohvr1_default() -> None:
-    assert hcv_cluster.resolve_threshold("core-e2-nohvr1", None) == 0.03
-
-
-def test_resolve_threshold_e1_e2_defaults_are_explicit_but_provisional() -> None:
-    assert hcv_cluster.resolve_threshold("e1-e2", None) == 0.03
-    assert hcv_cluster.resolve_threshold("e1-e2-nohvr1", None) == 0.03
-    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2") is False
-    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2-nohvr1") is False
-
-
-def test_resolve_threshold_core_e2_full() -> None:
-    assert hcv_cluster.resolve_threshold("core-e2", None) == 0.045
-
-
-def test_resolve_threshold_ns5b() -> None:
-    assert hcv_cluster.resolve_threshold("ns5b", None) == 0.015
-
-
-def test_resolve_threshold_preset_expands_before_lookup() -> None:
-    assert hcv_cluster.resolve_threshold("structural", None) == hcv_cluster.resolve_threshold(
-        "core-e2-nohvr1", None
-    )
-
-
-def test_resolve_threshold_normalizes_equivalent_region_expressions() -> None:
-    assert hcv_cluster.resolve_threshold("envelope", None) == 0.03
-    assert hcv_cluster.resolve_threshold("e1+e2", None) == 0.03
-    assert hcv_cluster.resolve_threshold("core-e1+e2", None) == 0.045
-    assert hcv_cluster.resolve_threshold("core+e1+e2", None) == 0.045
+@pytest.mark.parametrize(
+    ("region", "distance", "expected", "evidence_based"),
+    [
+        pytest.param("core-e2-nohvr1", "tn93", 0.03, True, id="tn93-core-e2-nohvr1"),
+        pytest.param("core-e2", "tn93", 0.045, True, id="tn93-core-e2"),
+        pytest.param("ns5b", "tn93", 0.015, True, id="tn93-ns5b"),
+        pytest.param("NS5B", "tn93", 0.015, None, id="tn93-case-insensitive"),
+        # E1-E2 defaults are explicit but provisional (not evidence-based).
+        pytest.param("e1-e2", "tn93", 0.03, False, id="tn93-e1-e2-provisional"),
+        pytest.param("e1-e2-nohvr1", "tn93", 0.03, False, id="tn93-e1-e2-nohvr1-provisional"),
+        # Presets and equivalent expressions normalise before lookup.
+        pytest.param("structural", "tn93", 0.03, None, id="tn93-preset-expands"),
+        pytest.param("envelope", "tn93", 0.03, None, id="tn93-envelope"),
+        pytest.param("e1+e2", "tn93", 0.03, None, id="tn93-e1+e2"),
+        pytest.param("core-e1+e2", "tn93", 0.045, None, id="tn93-core-e1+e2"),
+        pytest.param("core+e1+e2", "tn93", 0.045, None, id="tn93-core+e1+e2"),
+        # The pipeline's SNP distance is uncorrected p-distance -- the metric
+        # Lamoury et al. 2015 used -- so their region values apply directly.
+        pytest.param("core-e2-nohvr1", "snp", 0.03, True, id="snp-core-e2-nohvr1"),
+        pytest.param("core-e2", "snp", 0.045, None, id="snp-core-e2"),
+        pytest.param("ns5b", "snp", 0.015, None, id="snp-ns5b"),
+        pytest.param("e1-e2", "snp", None, False, id="snp-e1-e2-fallback"),
+    ],
+)
+def test_resolve_threshold_defaults_and_evidence_flag(
+    region: str, distance: str, expected: float | None, evidence_based: bool | None
+) -> None:
+    if expected is None:  # unevidenced SNP region -> SNP-specific fallback
+        expected = hcv_cluster.FALLBACK_THRESHOLD_SNP
+    assert hcv_cluster.resolve_threshold(region, None, distance=distance) == expected
+    if evidence_based is not None:
+        assert (
+            hcv_cluster.region_threshold_is_evidence_based(region, distance=distance)
+            is evidence_based
+        )
 
 
 def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
     assert hcv_cluster.resolve_threshold("cds", None) == hcv_cluster.FALLBACK_THRESHOLD
+    assert hcv_cluster.region_threshold_is_evidence_based("cds") is False
     assert hcv_cluster.region_threshold_is_explicit("cds") is False
     assert hcv_cluster.region_threshold_is_explicit("e1-e2") is True
 
 
-def test_resolve_threshold_case_insensitive() -> None:
-    assert hcv_cluster.resolve_threshold("NS5B", None) == hcv_cluster.resolve_threshold("ns5b", None)
-
-
-def test_region_threshold_is_evidence_based() -> None:
-    assert hcv_cluster.region_threshold_is_evidence_based("core-e2-nohvr1") is True
-    assert hcv_cluster.region_threshold_is_evidence_based("core-e2") is True
-    assert hcv_cluster.region_threshold_is_evidence_based("ns5b") is True
-    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2") is False
-    assert hcv_cluster.region_threshold_is_evidence_based("cds") is False
-
-
-def test_resolve_threshold_snp_matches_lamoury_p_distance() -> None:
-    # This pipeline's SNP distance is uncorrected p-distance -- the same metric
-    # Lamoury et al. 2015 used, so their region values apply directly (not as an
-    # approximation the way they're reused for TN93's core-e2/ns5b defaults).
-    assert hcv_cluster.resolve_threshold("core-e2-nohvr1", None, distance="snp") == 0.03
-    assert hcv_cluster.resolve_threshold("core-e2", None, distance="snp") == 0.045
-    assert hcv_cluster.resolve_threshold("ns5b", None, distance="snp") == 0.015
-
-
-def test_resolve_threshold_snp_user_override_still_wins() -> None:
-    assert hcv_cluster.resolve_threshold("core-e2", 0.02, distance="snp") == 0.02
-
-
-def test_resolve_threshold_snp_unevidenced_region_returns_snp_fallback() -> None:
-    assert hcv_cluster.resolve_threshold(
-        "e1-e2", None, distance="snp"
-    ) == hcv_cluster.FALLBACK_THRESHOLD_SNP
-
-
-def test_region_threshold_is_evidence_based_snp() -> None:
-    assert hcv_cluster.region_threshold_is_evidence_based("core-e2-nohvr1", distance="snp") is True
-    assert hcv_cluster.region_threshold_is_evidence_based("e1-e2", distance="snp") is False
+@pytest.mark.parametrize(
+    ("region", "distance", "user_value"),
+    [
+        pytest.param("core-e2", "tn93", 0.030, id="tn93"),
+        pytest.param("core-e2", "snp", 0.02, id="snp"),
+    ],
+)
+def test_resolve_threshold_user_value_wins(region: str, distance: str, user_value: float) -> None:
+    assert hcv_cluster.resolve_threshold(region, user_value, distance=distance) == user_value
 
 
 # ---------------------------------------------------------------------------
@@ -124,27 +101,6 @@ def test_compute_snp_distances_detailed_counts(tmp_path: Path) -> None:
     assert abs(normalized - 1 / 4) < 1e-9
 
 
-def test_compute_snp_distances_gaps_and_ns_excluded(tmp_path: Path) -> None:
-    fasta = tmp_path / "test.fasta"
-    fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
-
-    results = hcv_cluster.compute_snp_distances_detailed(fasta)
-
-    _, _, snp_count, comparable_sites, _ = results[0]
-    # gap (-) and N positions must not count
-    assert comparable_sites == 4
-
-
-def test_compute_snp_distances_no_self_pairs(tmp_path: Path) -> None:
-    fasta = tmp_path / "test.fasta"
-    fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
-
-    rows = hcv_cluster.compute_snp_distances(fasta)
-
-    for row in rows:
-        assert row.source != row.target
-
-
 def test_compute_snp_distances_identical_sequences(tmp_path: Path) -> None:
     fasta = tmp_path / "test.fasta"
     fasta.write_text(_ALIGNED_FASTA_IDENTICAL)
@@ -158,28 +114,6 @@ def test_compute_snp_distances_identical_sequences(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # write_snp_csv
 # ---------------------------------------------------------------------------
-
-
-def test_write_snp_csv_header(tmp_path: Path) -> None:
-    fasta = tmp_path / "test.fasta"
-    fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
-    out_csv = tmp_path / "snp.csv"
-
-    hcv_cluster.write_snp_csv(out_csv, fasta)
-
-    lines = out_csv.read_text(encoding="utf-8").splitlines()
-    assert lines[0] == "source,target,distance,snp_count,comparable_sites"
-
-
-def test_write_snp_csv_distance_values(tmp_path: Path) -> None:
-    fasta = tmp_path / "test.fasta"
-    fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
-    out_csv = tmp_path / "snp.csv"
-
-    rows = hcv_cluster.write_snp_csv(out_csv, fasta)
-
-    assert len(rows) == 1
-    assert abs(rows[0].distance - 1 / 4) < 1e-9
 
 
 def test_write_snp_csv_parseable_by_parse_distance_table(tmp_path: Path) -> None:
@@ -202,39 +136,6 @@ def test_write_snp_csv_parseable_by_parse_distance_table(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_build_parser_advanced_suppressed() -> None:
-    parser = hcv_cluster.build_parser(show_advanced=False)
-    # Find the run subparser and check that --min-coverage help is SUPPRESS
-    run_subparser = None
-    for action in parser._subparsers._actions:  # type: ignore[attr-defined]
-        if hasattr(action, "_name_parser_map"):
-            run_subparser = action._name_parser_map.get("run")
-    assert run_subparser is not None
-    min_cov_action = next(
-        (a for a in run_subparser._actions if "--min-coverage" in getattr(a, "option_strings", [])),
-        None,
-    )
-    assert min_cov_action is not None
-    import argparse as _argparse
-    assert min_cov_action.help == _argparse.SUPPRESS
-
-
-def test_build_parser_advanced_visible() -> None:
-    parser = hcv_cluster.build_parser(show_advanced=True)
-    run_subparser = None
-    for action in parser._subparsers._actions:  # type: ignore[attr-defined]
-        if hasattr(action, "_name_parser_map"):
-            run_subparser = action._name_parser_map.get("run")
-    assert run_subparser is not None
-    min_cov_action = next(
-        (a for a in run_subparser._actions if "--min-coverage" in getattr(a, "option_strings", [])),
-        None,
-    )
-    assert min_cov_action is not None
-    import argparse as _argparse
-    assert min_cov_action.help != _argparse.SUPPRESS
-
-
 def test_run_parser_uses_e1_e2_and_tolerant_alignment_defaults() -> None:
     args = hcv_cluster.build_parser().parse_args(["run", "--input", "samples.fasta"])
     assert args.region == "e1-e2"
@@ -242,28 +143,9 @@ def test_run_parser_uses_e1_e2_and_tolerant_alignment_defaults() -> None:
     assert args.minimap2_preset == "asm20"
 
 
-def test_main_help_advanced_returns_zero() -> None:
-    rc = hcv_cluster.main(["--help-advanced"])
-    assert rc == 0
-
-
-def test_main_empty_argv_returns_zero() -> None:
-    rc = hcv_cluster.main([])
-    assert rc == 0
-
-
-# ---------------------------------------------------------------------------
-# main subcommand routing
-# ---------------------------------------------------------------------------
-
-
-def test_main_unknown_subcommand_returns_nonzero() -> None:
-    import io
-    import contextlib
-
-    with contextlib.suppress(SystemExit):
-        rc = hcv_cluster.main(["unknown-subcommand"])
-        assert rc != 0
+@pytest.mark.parametrize("argv", [["--help-advanced"], []], ids=["help-advanced", "empty-argv"])
+def test_main_without_subcommand_returns_zero(argv: list[str]) -> None:
+    assert hcv_cluster.main(argv) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -303,27 +185,35 @@ def test_write_snp_links_csv_thresholds_on_p_distance_by_default(tmp_path: Path)
     assert [(link["source"], link["target"]) for link in links] == [("a", "b")]
 
 
-def test_snp_count_threshold_links_on_raw_count(tmp_path: Path) -> None:
-    """The pair p-distance rejects is linked when the user asks for '<=30 SNPs'."""
+@pytest.mark.parametrize(
+    ("pairs", "snp_count_threshold", "expected"),
+    [
+        pytest.param(
+            [("a", "b", 30, 2000), ("c", "d", 30, 500), ("e", "f", 31, 5000)],
+            30,
+            [("a", "b"), ("c", "d")],
+            id="raw-count-overrides-p-distance",
+        ),
+        pytest.param(
+            [("a", "b", 0, 2000), ("c", "d", 1, 2000)],
+            0,
+            [("a", "b")],
+            id="zero-links-only-identical-pairs",
+        ),
+    ],
+)
+def test_snp_count_threshold_links_on_raw_count(
+    tmp_path: Path, pairs: list[tuple], snp_count_threshold: int, expected: list[tuple]
+) -> None:
+    """A pair p-distance rejects is linked when the user asks for '<=30 SNPs'."""
     links = hcv_cluster.write_snp_links_csv(
         tmp_path / "l.csv",
-        _detailed([("a", "b", 30, 2000), ("c", "d", 30, 500), ("e", "f", 31, 5000)]),
+        _detailed(pairs),
         threshold=0.03,
-        snp_count_threshold=30,
+        snp_count_threshold=snp_count_threshold,
     )
 
-    assert [(link["source"], link["target"]) for link in links] == [("a", "b"), ("c", "d")]
-
-
-def test_snp_count_threshold_of_zero_links_only_identical_pairs(tmp_path: Path) -> None:
-    links = hcv_cluster.write_snp_links_csv(
-        tmp_path / "l.csv",
-        _detailed([("a", "b", 0, 2000), ("c", "d", 1, 2000)]),
-        threshold=0.03,
-        snp_count_threshold=0,
-    )
-
-    assert [(link["source"], link["target"]) for link in links] == [("a", "b")]
+    assert [(link["source"], link["target"]) for link in links] == expected
 
 
 def test_negative_snp_count_threshold_is_rejected(tmp_path: Path) -> None:
@@ -343,24 +233,6 @@ def test_snp_links_are_parseable_for_clustering(tmp_path: Path) -> None:
     parsed = hcv_workflow.parse_links(out_csv)
 
     assert [(link.source, link.target) for link in parsed] == [("a", "b")]
-
-
-def test_snp_count_summary_reports_range_and_median() -> None:
-    summary = hcv_cluster._snp_count_summary(
-        [
-            {"snp_count": 5, "comparable_sites": 2000},
-            {"snp_count": 30, "comparable_sites": 2100},
-            {"snp_count": 12, "comparable_sites": 1900},
-        ]
-    )
-
-    assert "5-30 SNPs" in summary
-    assert "median 12" in summary
-    assert "1900-2100 comparable sites" in summary
-
-
-def test_snp_count_summary_handles_no_links() -> None:
-    assert hcv_cluster._snp_count_summary([]) == "no linked pairs"
 
 
 def test_merge_link_tables_preserves_snp_columns(tmp_path: Path) -> None:

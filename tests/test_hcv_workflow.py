@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 import hcv_workflow
 
 
@@ -83,24 +85,28 @@ def test_detected_pass_genotypes_and_merged_cluster_ids(tmp_path: Path) -> None:
     ]
 
 
-def test_merge_link_tables_concatenates_across_genotypes(tmp_path: Path) -> None:
-    links_1a = tmp_path / "1a_links.csv"
-    links_3a = tmp_path / "3a_links.csv"
-    links_1a.write_text("source,target,distance\nA,B,0.005\n", encoding="utf-8")
-    links_3a.write_text("source,target,distance\nC,D,0.01\n", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("inputs", "expected_rows"),
+    [
+        pytest.param(
+            {"1a": "A,B,0.005\n", "3a": "C,D,0.01\n"},
+            ["A,B,0.005", "C,D,0.01"],
+            id="concatenates-across-genotypes",
+        ),
+        pytest.param({}, [], id="no-links"),
+    ],
+)
+def test_merge_link_tables(tmp_path: Path, inputs: dict[str, str], expected_rows: list[str]) -> None:
+    tables = []
+    for genotype, body in inputs.items():
+        path = tmp_path / f"{genotype}_links.csv"
+        path.write_text("source,target,distance\n" + body, encoding="utf-8")
+        tables.append((genotype, path))
 
     output = tmp_path / "merged_links.csv"
-    hcv_workflow.merge_link_tables([("1a", links_1a), ("3a", links_3a)], output)
+    hcv_workflow.merge_link_tables(tables, output)
 
     assert output.read_text(encoding="utf-8").splitlines() == [
         "source,target,distance",
-        "A,B,0.005",
-        "C,D,0.01",
+        *expected_rows,
     ]
-
-
-def test_merge_link_tables_handles_no_links(tmp_path: Path) -> None:
-    output = tmp_path / "merged_links.csv"
-    hcv_workflow.merge_link_tables([], output)
-
-    assert output.read_text(encoding="utf-8").splitlines() == ["source,target,distance"]

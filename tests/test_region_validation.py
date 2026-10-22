@@ -1,39 +1,37 @@
+import pytest
+
 import hcv_cluster_prep
 
 
-def test_validate_region_syntax_accepts_single_region() -> None:
-    assert hcv_cluster_prep.validate_region_syntax("ns5b") is None
+@pytest.mark.parametrize(
+    "region",
+    [
+        pytest.param("ns5b", id="single-region"),
+        pytest.param("e1-e2", id="range"),
+        pytest.param("core-e2", id="preset-core-e2"),
+        pytest.param("core-e2-nohvr1", id="preset-core-e2-nohvr1"),
+        pytest.param("e1-e2-nohvr1", id="preset-e1-e2-nohvr1"),
+        pytest.param("structural", id="preset-structural"),
+        pytest.param("cds", id="preset-cds"),
+        pytest.param("core-e2+ns3", id="union"),
+        pytest.param("core-e2-nohvr1+ns3", id="union-nohvr1"),
+    ],
+)
+def test_validate_region_syntax_accepts_valid_expressions(region: str) -> None:
+    assert hcv_cluster_prep.validate_region_syntax(region) is None
 
 
-def test_validate_region_syntax_accepts_range() -> None:
-    assert hcv_cluster_prep.validate_region_syntax("e1-e2") is None
-
-
-def test_validate_region_syntax_accepts_preset() -> None:
-    assert hcv_cluster_prep.validate_region_syntax("core-e2") is None
-    assert hcv_cluster_prep.validate_region_syntax("core-e2-nohvr1") is None
-    assert hcv_cluster_prep.validate_region_syntax("e1-e2-nohvr1") is None
-    assert hcv_cluster_prep.validate_region_syntax("structural") is None
-    assert hcv_cluster_prep.validate_region_syntax("cds") is None
-
-
-def test_validate_region_syntax_accepts_union() -> None:
-    assert hcv_cluster_prep.validate_region_syntax("core-e2+ns3") is None
-    assert hcv_cluster_prep.validate_region_syntax("core-e2-nohvr1+ns3") is None
-
-
-def test_validate_region_syntax_rejects_unknown_region() -> None:
-    error = hcv_cluster_prep.validate_region_syntax("not-a-region")
+@pytest.mark.parametrize(
+    ("region", "message_fragment"),
+    [
+        pytest.param("not-a-region", "not-a-region", id="unknown-region"),
+        pytest.param("ns5b-core", "reversed", id="reversed-range"),
+        pytest.param("", "", id="empty"),
+    ],
+)
+def test_validate_region_syntax_rejects_invalid_expressions(
+    region: str, message_fragment: str
+) -> None:
+    error = hcv_cluster_prep.validate_region_syntax(region)
     assert error is not None
-    assert "not-a-region" in error
-
-
-def test_validate_region_syntax_rejects_reversed_range() -> None:
-    error = hcv_cluster_prep.validate_region_syntax("ns5b-core")
-    assert error is not None
-    assert "reversed" in error
-
-
-def test_validate_region_syntax_rejects_empty() -> None:
-    error = hcv_cluster_prep.validate_region_syntax("")
-    assert error is not None
+    assert message_fragment in error

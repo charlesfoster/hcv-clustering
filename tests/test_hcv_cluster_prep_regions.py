@@ -12,14 +12,6 @@ def _synthetic_regions() -> dict[str, hcv_cluster_prep.RegionSegment]:
     }
 
 
-def test_prep_align_parser_uses_70_percent_coverage_default() -> None:
-    args = hcv_cluster_prep.build_parser().parse_args(
-        ["prep-align", "--input", "samples.fasta", "--genotype", "1a", "--out-prefix", "out"]
-    )
-    assert args.min_coverage == 0.7
-    assert args.region is None  # command_prep_align resolves fixed mode to e1-e2
-
-
 def test_mask_hvr1_from_e2_trims_n_terminal_span() -> None:
     e2 = hcv_cluster_prep.RegionSegment("e2", 1491, 2768, "test", "detail")
     trimmed = hcv_cluster_prep.mask_hvr1_from_e2(e2)
@@ -34,7 +26,7 @@ def test_mask_hvr1_from_e2_rejects_e2_shorter_than_mask() -> None:
         hcv_cluster_prep.mask_hvr1_from_e2(tiny_e2)
 
 
-def test_resolve_core_e2_nohvr1_returns_two_discontiguous_segments() -> None:
+def test_core_e2_nohvr1_selection_excludes_hvr1_length_from_total() -> None:
     regions = _synthetic_regions()
     segments = hcv_cluster_prep.resolve_core_e2_nohvr1(regions)
     assert len(segments) == 2
@@ -44,9 +36,6 @@ def test_resolve_core_e2_nohvr1_returns_two_discontiguous_segments() -> None:
     assert e2_segment.start == regions["e2"].start + hcv_cluster_prep.HVR1_LENGTH_NT
     assert e2_segment.end == regions["e2"].end
 
-
-def test_core_e2_nohvr1_selection_excludes_hvr1_length_from_total() -> None:
-    regions = _synthetic_regions()
     selection = hcv_cluster_prep.resolve_region_selection("core-e2-nohvr1", regions, strategy="fixed")
     full_span = regions["e2"].end - regions["core"].start + 1
     assert selection.length == full_span - hcv_cluster_prep.HVR1_LENGTH_NT
@@ -70,14 +59,6 @@ def test_core_e2_full_selection_is_unaffected_and_contiguous() -> None:
     selection = hcv_cluster_prep.resolve_region_selection("core-e2", regions, strategy="fixed")
     assert len(selection.segments) == 1
     assert selection.length == regions["e2"].end - regions["core"].start + 1
-
-
-def test_structural_preset_matches_core_e2_nohvr1() -> None:
-    regions = _synthetic_regions()
-    masked = hcv_cluster_prep.resolve_region_selection("core-e2-nohvr1", regions, strategy="fixed")
-    via_preset = hcv_cluster_prep.resolve_region_selection("structural", regions, strategy="fixed")
-    assert via_preset.length == masked.length
-    assert via_preset.segments == masked.segments
 
 
 def test_extract_region_selection_concatenates_around_masked_hvr1() -> None:

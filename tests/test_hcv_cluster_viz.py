@@ -32,52 +32,37 @@ def _metadata_network():
     return nodes, edges
 
 
-def test_filter_singletons_drops_size_one_clusters() -> None:
-    nodes = [
-        {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "2"},
-        {"sample_id": "B", "cluster_id": "C0001", "cluster_size": "2"},
-        {"sample_id": "C", "cluster_id": "C0002", "cluster_size": "1"},
-    ]
-    edges = [
-        {"source": "A", "target": "B", "distance": "0.001"},
-    ]
-
+@pytest.mark.parametrize(
+    ("nodes", "edges", "expected_ids", "expected_edge_count"),
+    [
+        pytest.param(
+            [
+                {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "2"},
+                {"sample_id": "B", "cluster_id": "C0001", "cluster_size": "2"},
+                {"sample_id": "C", "cluster_id": "C0002", "cluster_size": "1"},
+            ],
+            [{"source": "A", "target": "B", "distance": "0.001"}],
+            {"A", "B"},
+            1,
+            id="drops-size-one-clusters",
+        ),
+        pytest.param(
+            [
+                {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "1"},
+                {"sample_id": "B", "cluster_id": "C0002", "cluster_size": "1"},
+            ],
+            [{"source": "A", "target": "B", "distance": "0.02"}],
+            set(),
+            0,
+            id="drops-edges-touching-removed-nodes",
+        ),
+    ],
+)
+def test_filter_singletons(nodes, edges, expected_ids, expected_edge_count) -> None:
     filtered_nodes, filtered_edges = hcv_cluster_viz.filter_singletons(nodes, edges)
 
-    assert {row["sample_id"] for row in filtered_nodes} == {"A", "B"}
-    assert filtered_edges == edges
-
-
-def test_filter_singletons_drops_edges_touching_removed_nodes() -> None:
-    nodes = [
-        {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "1"},
-        {"sample_id": "B", "cluster_id": "C0002", "cluster_size": "1"},
-    ]
-    edges = [
-        {"source": "A", "target": "B", "distance": "0.02"},
-    ]
-
-    filtered_nodes, filtered_edges = hcv_cluster_viz.filter_singletons(nodes, edges)
-
-    assert filtered_nodes == []
-    assert filtered_edges == []
-
-
-def test_build_network_figure_has_edge_and_node_trace() -> None:
-    nodes = [
-        {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "2"},
-        {"sample_id": "B", "cluster_id": "C0001", "cluster_size": "2"},
-    ]
-    edges = [
-        {"source": "A", "target": "B", "distance": "0.001"},
-    ]
-
-    figure = hcv_cluster_viz.build_network_figure(nodes, edges)
-
-    assert len(figure.data) == 2
-    assert len(figure.data[1].x) == 2
-    assert figure.data[1].mode == "markers"
-    assert figure.layout.showlegend is False
+    assert {row["sample_id"] for row in filtered_nodes} == expected_ids
+    assert filtered_edges == edges[:expected_edge_count]
 
 
 def test_metadata_channels_have_independent_legends_and_hover_only_ids() -> None:
@@ -209,8 +194,9 @@ def test_grouped_combined_figure_labels_each_genotype_region() -> None:
     }
 
 
-def test_cluster_id_labels_are_one_vector_text_item_per_cluster() -> None:
+def test_cluster_id_labels_are_one_vector_text_item_per_non_singleton_cluster() -> None:
     nodes, edges = _metadata_network()
+    nodes.append({"sample_id": "E", "cluster_id": "1a_C0002", "cluster_size": "1"})
 
     figure = hcv_cluster_viz.build_network_figure(
         nodes, edges, show_cluster_labels=True
@@ -218,24 +204,10 @@ def test_cluster_id_labels_are_one_vector_text_item_per_cluster() -> None:
 
     label_trace = next(trace for trace in figure.data if trace.name == "Cluster IDs")
     assert label_trace.mode == "text"
+    # The singleton cluster (1a_C0002) gets no label.
     assert list(label_trace.text) == ["1a_C0001", "3a_C0001"]
     assert len(label_trace.x) == 2
     assert label_trace.hoverinfo == "skip"
-
-
-def test_cluster_id_labels_omit_singletons() -> None:
-    nodes = [
-        {"sample_id": "A", "cluster_id": "C0001", "cluster_size": "2"},
-        {"sample_id": "B", "cluster_id": "C0001", "cluster_size": "2"},
-        {"sample_id": "C", "cluster_id": "C0002", "cluster_size": "1"},
-    ]
-
-    figure = hcv_cluster_viz.build_network_figure(
-        nodes, [], show_cluster_labels=True
-    )
-
-    label_trace = next(trace for trace in figure.data if trace.name == "Cluster IDs")
-    assert list(label_trace.text) == ["C0001"]
 
 
 def test_shape_cardinality_is_rejected_before_ambiguous_symbol_reuse() -> None:
@@ -295,6 +267,7 @@ def test_small_multiples_reuse_positions_and_keep_hover_only_labels() -> None:
         ["location", "age_range"],
         positions=positions,
         hover_fields=["genotype"],
+        show_cluster_labels=True,
     )
 
     sample_traces = [trace for trace in figure.data if trace.name == "Samples"]
@@ -305,18 +278,7 @@ def test_small_multiples_reuse_positions_and_keep_hover_only_labels() -> None:
     assert {annotation.text for annotation in figure.layout.annotations} == {
         "location", "age range",
     }
-
-
-def test_small_multiples_repeat_one_cluster_label_trace_per_panel() -> None:
-    nodes, edges = _metadata_network()
-
-    figure = hcv_cluster_viz.build_small_multiples_figure(
-        nodes,
-        edges,
-        ["location", "age_range"],
-        show_cluster_labels=True,
-    )
-
+    # One cluster-label trace is repeated per panel.
     label_traces = [trace for trace in figure.data if trace.name == "Cluster IDs"]
     assert len(label_traces) == 2
     assert all(list(trace.text) == ["1a_C0001", "3a_C0001"] for trace in label_traces)

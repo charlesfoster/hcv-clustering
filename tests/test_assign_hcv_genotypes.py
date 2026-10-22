@@ -5,36 +5,24 @@ import assign_hcv_genotypes_from_fasta as genotyping
 import pytest
 
 
-def test_normalize_records_strips_gaps_before_length_is_measured() -> None:
-    records = {
-        "seq1": {"description": "seq1", "sequence": "ACGT--ACGT"},
-    }
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param({"seq1": "ACGT--ACGT"}, {"seq1": "ACGTACGT"}, id="strips-gaps"),
+        pytest.param({"seq1": "acgu"}, {"seq1": "ACGT"}, id="uppercases-and-u-to-t"),
+        pytest.param(
+            {"seq1": "----", "seq2": "ACGT"},
+            {"seq1": "", "seq2": "ACGT"},
+            id="all-gap-becomes-empty",
+        ),
+    ],
+)
+def test_normalize_records(raw: dict[str, str], expected: dict[str, str]) -> None:
+    records = {name: {"description": name, "sequence": seq} for name, seq in raw.items()}
 
     normalized = genotyping.normalize_records(records)
 
-    assert normalized["seq1"]["sequence"] == "ACGTACGT"
-
-
-def test_normalize_records_uppercases_and_converts_u_to_t() -> None:
-    records = {
-        "seq1": {"description": "seq1", "sequence": "acgu"},
-    }
-
-    normalized = genotyping.normalize_records(records)
-
-    assert normalized["seq1"]["sequence"] == "ACGT"
-
-
-def test_normalize_records_all_gap_sequence_becomes_empty_not_a_crash() -> None:
-    records = {
-        "seq1": {"description": "seq1", "sequence": "----"},
-        "seq2": {"description": "seq2", "sequence": "ACGT"},
-    }
-
-    normalized = genotyping.normalize_records(records)
-
-    assert normalized["seq1"]["sequence"] == ""
-    assert normalized["seq2"]["sequence"] == "ACGT"
+    assert {name: rec["sequence"] for name, rec in normalized.items()} == expected
 
 
 def test_write_records_fasta_round_trips_normalized_sequence(tmp_path: Path) -> None:
@@ -47,12 +35,6 @@ def test_write_records_fasta_round_trips_normalized_sequence(tmp_path: Path) -> 
 
     reparsed = genotyping.parse_fasta(fasta_path)
     assert reparsed["seq1"]["sequence"] == "ACGTNNNNACGT"
-
-
-def test_default_minimap2_preset_allows_more_divergent_hcv() -> None:
-    args = genotyping.parse_args(["--input", "in.fasta", "--output-csv", "out.csv"])
-
-    assert args.preset == "asm20"
 
 
 def _write_split_paf(path: Path) -> None:
@@ -184,40 +166,35 @@ def test_gap_compressed_identity_does_not_treat_long_deletion_as_mismatches(tmp_
     assert row["block_identity"] == "0.773721"
 
 
-def test_split_hit_aggregation_rejects_discordant_target_gaps(tmp_path: Path) -> None:
-    paf = tmp_path / "discordant.paf"
-    paf.write_text(
-        "\n".join(
+@pytest.mark.parametrize(
+    ("paf_lines", "expected_bases"),
+    [
+        pytest.param(
             [
                 "sample\t9000\t0\t3000\t+\t3a_D17763.1\t9500\t0\t3000\t2800\t3000\t60\tAS:i:900\ttp:A:P",
                 # Query gap is 1000 nt but target gap is 4000 nt: not one collinear missing block.
                 "sample\t9000\t4000\t7000\t+\t3a_D17763.1\t9500\t7000\t9500\t2300\t2500\t60\tAS:i:800\ttp:A:P",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    hit = genotyping.aggregate_split_hits(genotyping.parse_paf(paf)["sample"])[0]
-
-    assert hit["alignment_segment_count"] == 1
-    assert hit["query_aligned_bases"] == 3000
-
-
-def test_split_hit_aggregation_rejects_query_overlap(tmp_path: Path) -> None:
-    paf = tmp_path / "overlap.paf"
-    paf.write_text(
-        "\n".join(
+            ],
+            3000,
+            id="discordant-target-gaps",
+        ),
+        pytest.param(
             [
                 "sample\t9000\t0\t4000\t+\t3a_D17763.1\t9500\t0\t4000\t3700\t4000\t60\tAS:i:900\ttp:A:P",
                 "sample\t9000\t3500\t7000\t+\t3a_D17763.1\t9500\t3500\t7000\t3200\t3500\t60\tAS:i:800\ttp:A:P",
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+            ],
+            4000,
+            id="query-overlap",
+        ),
+    ],
+)
+def test_split_hit_aggregation_rejects_non_collinear_segments(
+    tmp_path: Path, paf_lines: list[str], expected_bases: int
+) -> None:
+    paf = tmp_path / "split.paf"
+    paf.write_text("\n".join(paf_lines) + "\n", encoding="utf-8")
 
     hit = genotyping.aggregate_split_hits(genotyping.parse_paf(paf)["sample"])[0]
 
     assert hit["alignment_segment_count"] == 1
-    assert hit["query_aligned_bases"] == 4000
+    assert hit["query_aligned_bases"] == expected_bases

@@ -76,24 +76,25 @@ def test_reserved_columns_are_rejected(field: str) -> None:
         normalize_metadata_rows([{"sample_id": "A", field: "x"}])
 
 
-def test_csv_requires_key_and_unique_ids(tmp_path: Path) -> None:
-    missing_key = tmp_path / "missing.csv"
-    missing_key.write_text("location\nP1\n", encoding="utf-8")
-    with pytest.raises(MetadataValidationError, match="sample_id"):
-        load_metadata_csv(missing_key)
-
-    duplicate = tmp_path / "duplicate.csv"
-    duplicate.write_text("sample_id,location\nA,P1\nA,P2\n", encoding="utf-8")
-    with pytest.raises(MetadataValidationError, match="duplicate sample_id"):
-        load_metadata_csv(duplicate)
-
-
-def test_csv_rejects_rows_with_more_values_than_the_header(tmp_path: Path) -> None:
-    metadata = tmp_path / "extra_value.csv"
-    metadata.write_text("sample_id,location\nA,P1,unexpected\n", encoding="utf-8")
-
-    with pytest.raises(MetadataValidationError, match="more values than the header"):
-        load_metadata_csv(metadata)
+@pytest.mark.parametrize(
+    ("content", "match"),
+    [
+        pytest.param("location\nP1\n", "sample_id", id="missing-key"),
+        pytest.param(
+            "sample_id,location\nA,P1\nA,P2\n", "duplicate sample_id", id="duplicate-ids"
+        ),
+        pytest.param(
+            "sample_id,location\nA,P1,unexpected\n",
+            "more values than the header",
+            id="more-values-than-header",
+        ),
+    ],
+)
+def test_csv_requires_key_and_unique_ids(tmp_path: Path, content: str, match: str) -> None:
+    path = tmp_path / "metadata.csv"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(MetadataValidationError, match=match):
+        load_metadata_csv(path)
 
 
 def test_join_is_left_join_and_reports_both_unmatched_directions() -> None:
@@ -129,8 +130,7 @@ def test_write_metadata_csv_preserves_field_order_and_utf8(tmp_path: Path) -> No
         "sample_id,location,status", "A,Métro,yes",
     ]
 
-
-def test_normalized_metadata_with_missing_age_round_trips(tmp_path: Path) -> None:
-    rows = normalize_metadata_rows([{"sample_id": "A", "age": "", "location": ""}])
-    path = write_metadata_csv(rows, tmp_path / "metadata.csv")
-    assert load_metadata_csv(path) == rows
+    # Rows with a missing age survive a write/load round trip unchanged.
+    missing_age = normalize_metadata_rows([{"sample_id": "A", "age": "", "location": ""}])
+    round_trip = write_metadata_csv(missing_age, tmp_path / "metadata.csv")
+    assert load_metadata_csv(round_trip) == missing_age

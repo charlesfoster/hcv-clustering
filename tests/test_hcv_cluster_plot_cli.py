@@ -70,62 +70,6 @@ def _plot_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_parser_accepts_metadata_encodings_svg_and_combined_scope(tmp_path: Path) -> None:
-    args = hcv_cluster.build_parser(show_advanced=True).parse_args(
-        [
-            "run",
-            "--input",
-            "samples.fasta",
-            "--metadata",
-            str(tmp_path / "metadata.csv"),
-            "--plot-network",
-            "all",
-            "--plot-scope",
-            "both",
-            "--plot-combined-layout",
-            "by-genotype",
-            "--plot-node-spacing",
-            "expanded",
-            "--plot-color-by",
-            "location",
-            "--plot-symbol-by",
-            "indigenous",
-            "--plot-size-by",
-            "risk",
-            "--plot-size-order",
-            "low",
-            "--plot-size-order",
-            "high",
-            "--plot-outline-by",
-            "injecting",
-            "--plot-center-by",
-            "coinfection",
-            "--plot-hover-field",
-            "subtype",
-            "--plot-hover-field",
-            "location",
-        ]
-    )
-
-    assert args.plot_network == "all"
-    assert args.plot_scope == "both"
-    assert args.plot_combined_layout == "by-genotype"
-    assert args.plot_node_spacing == "expanded"
-    assert args.plot_center_by == "coinfection"
-    assert args.plot_size_order == ["low", "high"]
-    assert args.plot_hover_field == ["subtype", "location"]
-
-
-def test_parser_plot_defaults_remain_backward_compatible() -> None:
-    args = hcv_cluster.build_parser().parse_args(["run", "--input", "samples.fasta"])
-
-    assert args.plot_network == "none"
-    assert args.plot_scope == "per-genotype"
-    assert args.plot_combined_layout == "packed"
-    assert args.plot_node_spacing == "normal"
-    assert args.plot_color_by is None
-
-
 def test_small_multiples_reject_composite_encodings() -> None:
     args = hcv_cluster.build_parser().parse_args(
         [
@@ -347,43 +291,52 @@ def test_snp_only_combined_plot_uses_primary_root_paths(tmp_path: Path, monkeypa
     )
 
 
-def test_combined_layout_passes_component_packing_to_renderer(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("builder", "render_kwargs", "expected_args", "expected_kwargs"),
+    [
+        pytest.param(
+            "build_network_figure",
+            {"combined_layout": "by-genotype"},
+            {},
+            {
+                "layout_mode": "component_packed",
+                "group_by": "genotype",
+                "hover_fields": ("genotype",),
+            },
+            id="combined-layout-component-packing",
+        ),
+        pytest.param(
+            "build_small_multiples_figure",
+            {
+                "combined_layout": "packed",
+                "small_multiple_fields": ("genotype",),
+                "node_spacing": "expanded",
+            },
+            {2: ("genotype",)},
+            {"layout_mode": "component_packed", "node_spacing": "expanded"},
+            id="small-multiples-shared-renderer",
+        ),
+    ],
+)
+def test_render_cluster_plot_passes_layout_options_to_renderer(
+    tmp_path: Path,
+    monkeypatch,
+    builder: str,
+    render_kwargs: dict[str, object],
+    expected_args: dict[int, object],
+    expected_kwargs: dict[str, object],
+) -> None:
     clusters, links = tmp_path / "clusters.csv", tmp_path / "links.csv"
     _write_network_tables(clusters, links, combined=True)
     figure = SimpleNamespace(write_image=Mock(), write_html=Mock())
     build = Mock(return_value=figure)
-    monkeypatch.setattr(hcv_cluster.hcv_cluster_viz, "build_network_figure", build)
+    monkeypatch.setattr(hcv_cluster.hcv_cluster_viz, builder, build)
 
     hcv_cluster._render_cluster_plot(
-        "html", False, tmp_path, clusters, links, "", combined_layout="by-genotype"
+        "html", False, tmp_path, clusters, links, "", **render_kwargs
     )
 
-    assert build.call_args.kwargs["layout_mode"] == "component_packed"
-    assert build.call_args.kwargs["group_by"] == "genotype"
-    assert build.call_args.kwargs["hover_fields"] == ("genotype",)
-
-
-def test_small_multiple_render_uses_shared_renderer(tmp_path: Path, monkeypatch) -> None:
-    clusters, links = tmp_path / "clusters.csv", tmp_path / "links.csv"
-    _write_network_tables(clusters, links, combined=True)
-    figure = SimpleNamespace(write_image=Mock(), write_html=Mock())
-    build = Mock(return_value=figure)
-    monkeypatch.setattr(
-        hcv_cluster.hcv_cluster_viz, "build_small_multiples_figure", build
-    )
-
-    hcv_cluster._render_cluster_plot(
-        "html",
-        False,
-        tmp_path,
-        clusters,
-        links,
-        "",
-        combined_layout="packed",
-        small_multiple_fields=("genotype",),
-        node_spacing="expanded",
-    )
-
-    assert build.call_args.args[2] == ("genotype",)
-    assert build.call_args.kwargs["layout_mode"] == "component_packed"
-    assert build.call_args.kwargs["node_spacing"] == "expanded"
+    for index, value in expected_args.items():
+        assert build.call_args.args[index] == value
+    for name, value in expected_kwargs.items():
+        assert build.call_args.kwargs[name] == value

@@ -273,7 +273,7 @@ The stages are also available as `python hcv_cluster_stages.py <stage>` (`resolv
 
 **Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
 
-**Environments.** `pixi.toml` pins the scientific tools once, in the `core` feature, and three environments share that pin: `default` (development, tests, GUI), `nf` (adds Nextflow) and `pipeline` (only what the container installs). Bump tool versions deliberately, then re-check results; do not let re-locking move them.
+**Environments.** `pixi.toml` pins the scientific tools once, in the `core` feature, and three environments share that pin: `default` (development, tests, GUI), `nf` (adds Nextflow) and `pipeline` (only what the container installs). Bump tool versions deliberately, then re-check results; do not let re-locking move them. TN93 1.1 adds exact speed-ups for large data sets that give identical links to the default mode (checked on 3,000 sequences); enable them with `--extra-tn93-args "-S"` (or `--extra_tn93_args '-S'` in Nextflow).
 
 ---
 

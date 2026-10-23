@@ -27,7 +27,9 @@ from . import prep, workflow
 # so they reuse Lamoury et al. 2015's uncorrected-p-distance values as a (slightly
 # conservative, since TN93 >= p-distance for the same pair) approximation.
 REGION_THRESHOLDS_TN93: dict[str, float] = {
-    "e1-e2": 0.03,
+    # Project decision (TN93 and SNP): the default full e1-e2 (HVR1 included) uses the more
+    # inclusive 0.045, the same value as HVR1-included core-e2. HVR1-masked regions stay at 0.03.
+    "e1-e2": 0.045,
     "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
@@ -40,7 +42,7 @@ REGION_THRESHOLDS_TN93: dict[str, float] = {
 # shorter fragments and ClusterPicker method mean the region thresholds remain
 # literature anchors rather than exact validation of this workflow.
 REGION_THRESHOLDS_SNP: dict[str, float] = {
-    "e1-e2": 0.03,
+    "e1-e2": 0.045,  # project decision, as for TN93 above
     "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
@@ -48,15 +50,18 @@ REGION_THRESHOLDS_SNP: dict[str, float] = {
 }
 
 # An explicit operational default is not the same as a region-specific validated
-# cutoff. E1-E2 uses 0.03 for continuity with collaborator practice and must keep
-# the provisional warning until it has been calibrated for this exact region.
+# cutoff. E1-E2 uses an inclusive 0.045 (a project decision, see
+# docs/threshold_rationale.md) and must keep the provisional warning until it has been
+# calibrated for this exact region.
 EVIDENCE_ANCHORED_REGIONS_TN93 = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
 EVIDENCE_ANCHORED_REGIONS_SNP = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
 
 # Backward-compat aliases: TN93 was the only metric these names covered originally.
 REGION_THRESHOLDS: dict[str, float] = REGION_THRESHOLDS_TN93
-FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["e1-e2"]
-FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["e1-e2"]
+# Regions with no entry above fall back to 0.03. This is a literal on purpose: it must not
+# follow the e1-e2 default, which is a separate decision.
+FALLBACK_THRESHOLD: float = 0.03
+FALLBACK_THRESHOLD_SNP: float = 0.03
 
 
 def canonical_threshold_region(region: str) -> str:

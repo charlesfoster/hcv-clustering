@@ -5,7 +5,7 @@ import pytest
 
 from hcv_cluster import labels
 
-DEF = {"metric": "tn93", "region": "e1-e2", "threshold": 0.03}
+DEF = {"metric": "tn93", "region": "e1-e2", "threshold": 0.045}
 
 
 def _partition(*groups: tuple[str, ...], genotype: str = "1a") -> dict[tuple[str, str], str]:
@@ -102,7 +102,7 @@ def test_definition_change_is_refused() -> None:
     registry = labels.Registry()
     _run(registry, _partition(("a", "b")))
     with pytest.raises(labels.RegistryError, match="different registry"):
-        _run(registry, _partition(("a", "b")), definition={**DEF, "threshold": 0.045})
+        _run(registry, _partition(("a", "b")), definition={**DEF, "threshold": 0.03})
 
 
 def test_label_run_persists_only_when_committed(tmp_path: Path) -> None:

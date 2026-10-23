@@ -18,12 +18,12 @@ from hcv_cluster import cli, workflow
         pytest.param("ns5b", "tn93", 0.015, True, id="tn93-ns5b"),
         pytest.param("NS5B", "tn93", 0.015, None, id="tn93-case-insensitive"),
         # E1-E2 defaults are explicit but provisional (not evidence-based).
-        pytest.param("e1-e2", "tn93", 0.03, False, id="tn93-e1-e2-provisional"),
+        pytest.param("e1-e2", "tn93", 0.045, False, id="tn93-e1-e2-provisional"),
         pytest.param("e1-e2-nohvr1", "tn93", 0.03, False, id="tn93-e1-e2-nohvr1-provisional"),
         # Presets and equivalent expressions normalise before lookup.
         pytest.param("structural", "tn93", 0.03, None, id="tn93-preset-expands"),
-        pytest.param("envelope", "tn93", 0.03, None, id="tn93-envelope"),
-        pytest.param("e1+e2", "tn93", 0.03, None, id="tn93-e1+e2"),
+        pytest.param("envelope", "tn93", 0.045, None, id="tn93-envelope"),
+        pytest.param("e1+e2", "tn93", 0.045, None, id="tn93-e1+e2"),
         pytest.param("core-e1+e2", "tn93", 0.045, None, id="tn93-core-e1+e2"),
         pytest.param("core+e1+e2", "tn93", 0.045, None, id="tn93-core+e1+e2"),
         # The pipeline's SNP distance is uncorrected p-distance -- the metric
@@ -31,7 +31,8 @@ from hcv_cluster import cli, workflow
         pytest.param("core-e2-nohvr1", "snp", 0.03, True, id="snp-core-e2-nohvr1"),
         pytest.param("core-e2", "snp", 0.045, None, id="snp-core-e2"),
         pytest.param("ns5b", "snp", 0.015, None, id="snp-ns5b"),
-        pytest.param("e1-e2", "snp", None, False, id="snp-e1-e2-fallback"),
+        pytest.param("e1-e2", "snp", 0.045, False, id="snp-e1-e2-provisional"),
+        pytest.param("cds", "snp", None, False, id="snp-fallback"),
     ],
 )
 def test_resolve_threshold_defaults_and_evidence_flag(
@@ -48,7 +49,7 @@ def test_resolve_threshold_defaults_and_evidence_flag(
 
 
 def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
-    assert cli.resolve_threshold("cds", None) == cli.FALLBACK_THRESHOLD
+    assert cli.resolve_threshold("cds", None) == cli.FALLBACK_THRESHOLD == 0.03  # not tied to e1-e2
     assert cli.region_threshold_is_evidence_based("cds") is False
     assert cli.region_threshold_is_explicit("cds") is False
     assert cli.region_threshold_is_explicit("e1-e2") is True

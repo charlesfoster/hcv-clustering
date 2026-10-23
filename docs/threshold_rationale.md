@@ -2,16 +2,16 @@
 
 ## The one-sentence version
 
-> The default is full `e1-e2` at TN93 ≤0.03. This preserves the collaborators' established conservative convention, but it is a provisional operational cutoff—not a cutoff validated for this exact full-length region. Results should be checked across a sensitivity range and against epidemiological evidence.
+> The default is full `e1-e2` at ≤0.045 (TN93 and SNP). This is a deliberate, more inclusive project decision (it links more sequences than the earlier 0.03 default, so clusters are larger and more numerous), and it is a provisional operational cutoff—not a cutoff validated for this exact full-length region. Results should be checked across a sensitivity range and against epidemiological evidence.
 
 ---
 
 ## Defaults
 
 The pipeline has explicit operational defaults so runs remain reproducible. Explicit does not mean
-region-specific validation: the E1–E2 values below are conservative starting points selected for continuity.
+region-specific validation: the E1–E2 values below are operational starting points. The `e1-e2` default (TN93 and SNP) was raised from 0.03 to 0.045 by project decision, to favour sensitivity (catching possible links) over specificity; it matches the value used for HVR1-included `core-e2`, while HVR1-masked regions keep 0.03.
 
-- **`e1-e2` (default): TN93 ≤0.03 / SNP ≤0.03**, HVR1 included; provisional.
+- **`e1-e2` (default): TN93 ≤0.045 / SNP ≤0.045**, HVR1 included; provisional.
 - **`e1-e2-nohvr1`: TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked; provisional.
 - **`core-e2-nohvr1`: TN93 ≤0.03 / SNP ≤0.03**, HVR1 masked; literature-anchored but not an exact reproduction of the published fragment.
 - **`core-e2` (alternative): TN93 ≤0.045 / SNP ≤0.045**, HVR1 included, unchanged/contiguous.
@@ -30,7 +30,7 @@ but the citation is doing different work in each:
 
 | Region | TN93 default | Its real evidence | SNP default | Its real evidence |
 |---|---|---|---|---|
-| `e1-e2` | 0.03 | Conservative operational convention; not validated for this exact region | 0.03 | Conservative operational convention; not validated for this exact region |
+| `e1-e2` | 0.045 | Project decision for an inclusive cutoff, equal to the HVR1-included `core-e2` value; not validated for this exact region | 0.045 | Same project decision; not validated for this exact region |
 | `e1-e2-nohvr1` | 0.03 | Provisional extrapolation | 0.03 | Provisional extrapolation |
 | `core-e2-nohvr1` | 0.03 | **Bartlett et al. 2017**, same metric/graph method but a shorter fragment — closest anchor | 0.03 | **Lamoury et al. 2015**, same distance family but a shorter fragment/tree method — supporting anchor |
 | `core-e2` | 0.045 | Lamoury et al. 2015's p-distance value, reused as a TN93 and full-region approximation | 0.045 | Lamoury et al. 2015 directly supports the p-distance value, but not this workflow's full-E2 span or connected-component method |
@@ -111,14 +111,14 @@ At any alignment position where either sequence carries an IUPAC ambiguity code 
 
 ```python
 REGION_THRESHOLDS_TN93 = {
-    "e1-e2": 0.03,             # default; provisional operational cutoff
+    "e1-e2": 0.045,            # default; inclusive project decision, provisional
     "e1-e2-nohvr1": 0.03,      # provisional operational cutoff
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,         # HVR1 included, explicit alternative
     "ns5b": 0.015,
 }
 REGION_THRESHOLDS_SNP = {
-    "e1-e2": 0.03,
+    "e1-e2": 0.045,
     "e1-e2-nohvr1": 0.03,
     "core-e2-nohvr1": 0.03,
     "core-e2": 0.045,
@@ -130,11 +130,12 @@ Numerically identical tables today (see "TN93 vs. SNP defaults" above for why), 
 rather than one shared dict so a future metric-specific revision doesn't require guessing which citation a
 shared number was actually anchored to.
 
-- **`e1-e2` (default) and `e1-e2-nohvr1` → 0.03.** Explicit conservative operational defaults; sensitivity analysis is recommended.
+- **`e1-e2` (default) → TN93 0.045.** A deliberately inclusive project decision (TN93 and SNP), equal to the HVR1-included `core-e2` value; it is not validated for this exact region, so sensitivity analysis is recommended.
+- **`e1-e2-nohvr1` → 0.03.** Explicit provisional operational default.
 - **`core-e2-nohvr1` → 0.03.** Bartlett et al. 2017 is the closest methodological anchor, but its shorter fragment is not an exact match to the workflow's full region.
 - **`core-e2` (alternative, HVR1 included) → 0.045.** Lamoury et al. 2015's HVR1-inclusive Core-E2 p-distance value; see the metric caveat above.
 - **`ns5b` → 0.015.** Lamoury et al. 2015.
-- **Any other region → falls back to 0.03** as a provisional starting point. The CLI prints a warning when a value lacks region-specific evidence:
+- **Any other region → falls back to 0.03** as a provisional starting point (fixed, and independent of the `e1-e2` default). The CLI prints a warning when a value lacks region-specific evidence:
 
   ```
   WARNING: no HCV-specific clustering threshold evidence for region '<region>'; using the

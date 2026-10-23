@@ -60,7 +60,7 @@ The GenBank reference records used for alignment coordinates ship with the repos
 pixi run hcv-cluster run -i samples.fasta
 ```
 
-Genotypes are detected automatically. The default analysis uses full `e1-e2` at a provisional, conservative threshold of 0.03. The same 0.03 operational default is used for `e1-e2-nohvr1`; established alternatives retain their region-specific values (`core-e2` 0.045, `core-e2-nohvr1` 0.03, and `ns5b` 0.015). See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence and limitations. Results are written to `results/` by default.
+Genotypes are detected automatically. The default analysis uses full `e1-e2` (HVR1 included) at a deliberately inclusive threshold of 0.045 (TN93 and SNP), the project's choice, which is provisional for this exact region. HVR1-masked regions use 0.03 (`e1-e2-nohvr1`, `core-e2-nohvr1`), `core-e2` uses 0.045 and `ns5b` 0.015. See [`docs/threshold_rationale.md`](docs/threshold_rationale.md) for the evidence and limitations. Results are written to `results/` by default.
 
 For recurring runs against a growing input FASTA, write to a new output
 directory while reusing reference-anchored alignments from an earlier results
@@ -287,7 +287,7 @@ The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv
 
 ## Region expressions
 
-The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `e1-e2` retains full E1 and E2, including HVR1. Use `e1-e2-nohvr1` to retain all of E1 and E2 except the first 81 nt of E2. The E1–E2 threshold of 0.03 is an operational, conservative starting point rather than a cutoff validated for this exact full-length region; sensitivity analysis remains recommended.
+The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `e1-e2` retains full E1 and E2, including HVR1. Use `e1-e2-nohvr1` to retain all of E1 and E2 except the first 81 nt of E2. The E1–E2 threshold of 0.045 is a deliberately inclusive project choice (more sequences link, so clusters are larger and more numerous than at 0.03) rather than a cutoff validated for this exact full-length region; sensitivity analysis remains recommended.
 
 **Individual regions** (in genome order):
 
@@ -308,7 +308,7 @@ The `-r/--region` argument accepts a flexible expression describing which part o
 
 | Name | Description | Default threshold |
 |------|-------------|-------------------|
-| `e1-e2` | E1 through E2, **HVR1 included** — the default region | 0.03 (provisional) |
+| `e1-e2` | E1 through E2, **HVR1 included** — the default region | 0.045 (provisional) |
 | `e1-e2-nohvr1` | E1 through E2, **HVR1 masked** | 0.03 (provisional) |
 | `core-e2-nohvr1` | Core through E2, **HVR1 masked** | 0.03 |
 | `core-e2` | Core through E2, **HVR1 included**, contiguous | 0.045 |

@@ -29,7 +29,7 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 - Reference records for all 84 catalogued subtypes ship with the package; no network access is needed.
 
 ### Changed
-- **Results-affecting:** default threshold is now chosen by region and distance metric (0.03 for the default
+- **Results-affecting:** default threshold is now chosen by region and distance metric (0.045 for the default
   `e1-e2`), not by genotype; default region is `e1-e2`; TN93 ambiguity handling defaults to `average`;
   minimap2 preset `asm20`.
 - A sequence whose k-mer profile conflicts with its assigned subtype is excluded (and audited) instead of

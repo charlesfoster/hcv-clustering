@@ -310,7 +310,7 @@ def command_run(args: argparse.Namespace) -> int:
         if region_threshold_is_explicit(args.region):
             print(
                 f"NOTE: the {resolve_threshold(args.region, None):.3g} default for region "
-                f"'{args.region}' is a conservative operational convention, not a "
+                f"'{args.region}' is an operational convention, not a "
                 "region-validated cutoff. Sensitivity analysis is recommended."
             )
         else:
@@ -589,9 +589,9 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Maximum distance for cluster linking. Default: region-dependent "
-            "(0.03 for e1-e2, the default region, and e1-e2-nohvr1; 0.045 for "
-            "core-e2 with HVR1 included; 0.015 for ns5b; 0.03 for any other region — "
-            "see docs/threshold_rationale.md)."
+            "(0.045 for e1-e2, the default region, and for core-e2 with HVR1 included; "
+            "0.03 for e1-e2-nohvr1 and core-e2-nohvr1; 0.015 for ns5b; 0.03 for any "
+            "other region — see docs/threshold_rationale.md)."
         ),
     )
     run_parser.add_argument(

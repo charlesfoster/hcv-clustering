@@ -441,7 +441,7 @@ def _run_tab() -> None:
             refs_dir = Path(
                 st.text_input(
                     "References cache dir",
-                    value="refs",
+                    value=str(hcv_cluster_prep.DEFAULT_REFS_DIR),
                     help="Directory where downloaded GenBank/FASTA reference records are cached and reused across runs, so they aren't re-downloaded every time.",
                 )
             )
@@ -1024,7 +1024,7 @@ def _refs_tab() -> None:
     st.caption("Downloads and caches GenBank reference records used for alignment. Run once before the first clustering run.")
 
     genotype = st.text_input("Genotype to prepare, or 'all'", value="all")
-    refs_dir = Path(st.text_input("References cache dir", value="refs", key="refs_tab_dir"))
+    refs_dir = Path(st.text_input("References cache dir", value=str(hcv_cluster_prep.DEFAULT_REFS_DIR), key="refs_tab_dir"))
     ncbi_email = st.text_input("NCBI email", value="", key="refs_tab_email")
     force_download = st.checkbox("Force re-download", key="refs_tab_force")
     verbose = st.checkbox("Verbose logging", key="refs_tab_verbose")

@@ -296,6 +296,57 @@ def annotate_cluster_table(path: Path, plan: VariantPlan) -> None:
         writer.writerows(rows)
 
 
+def read_variants_csv(path: Path, records: list[hcv_cluster_prep.FastaRecord] | None = None) -> VariantPlan:
+    """Rebuild a plan from ``sequence_variants.csv`` (the file-based hand-off between stages)."""
+    variants: list[VariantRecord] = []
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                coverage = row.get("region_coverage") or ""
+                variants.append(
+                    VariantRecord(
+                        sequence_id=row["sequence_id"],
+                        sample_id=row[BASE_SAMPLE_FIELD],
+                        variant=row["variant"],
+                        n_variants=int(row["n_variants"]),
+                        input_record=int(row["input_record"]),
+                        completeness=int(row["completeness"]),
+                        genotype=row.get("genotype", ""),
+                        region_coverage=float(coverage) if coverage else None,
+                        status=row["status"],
+                        detail=row.get("detail", ""),
+                    )
+                )
+    return VariantPlan(records=list(records or []), variants=variants)
+
+
+DECISION_FIELDS = ("sequence_id", "genotype", "region_coverage", "status", "detail")
+
+
+def write_decisions(plan: VariantPlan, genotype: str, path: Path) -> Path:
+    """Record what same-genotype selection decided for one subtype's variants."""
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=DECISION_FIELDS)
+        writer.writeheader()
+        for variant in plan.variants:
+            if variant.genotype == genotype and variant.status in {"kept", "dropped_same_genotype"}:
+                row = variant.as_row()
+                writer.writerow({field: row[field] for field in DECISION_FIELDS})
+    return path
+
+
+def apply_decisions(plan: VariantPlan, path: Path) -> None:
+    by_id = {variant.sequence_id: variant for variant in plan.variants}
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            variant = by_id.get(row["sequence_id"])
+            if variant is None:
+                continue
+            variant.status = row["status"]
+            variant.detail = row["detail"]
+            variant.region_coverage = float(row["region_coverage"]) if row["region_coverage"] else None
+
+
 def write_variants_csv(plan: VariantPlan, path: Path) -> Path:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=VARIANT_FIELDS)

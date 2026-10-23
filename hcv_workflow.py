@@ -689,7 +689,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--min-identity", type=float, default=0.75)
     parser.add_argument("--close-hit-fraction", type=float, default=0.98)
     parser.add_argument("--keep-paf", action="store_true")
-    parser.add_argument("--refs-dir", type=Path, default=Path("refs"))
+    parser.add_argument("--refs-dir", type=Path, default=hcv_cluster_prep.DEFAULT_REFS_DIR)
     parser.add_argument("--reference-map", type=Path)
     parser.add_argument("--ncbi-email")
     parser.add_argument("--force-download", action="store_true")

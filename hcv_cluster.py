@@ -18,211 +18,30 @@ import hcv_cluster_audit
 import hcv_cluster_labels
 import hcv_cluster_metadata
 import hcv_cluster_prep
+import hcv_cluster_stages
 import hcv_cluster_variants
 import hcv_cluster_viz
 import hcv_workflow
 
 
-# Explicit per-region defaults; some are provisional operational conventions and
-# others are literature-anchored. See docs/threshold_rationale.md. Deliberately NOT genotype-split:
-# the HCV Core-E2 literature applies a single threshold across genotypes, and the
-# only Australian genotype-specific number available (different region and metric)
-# does not support a 1a/1b-vs-rest split, so a genotype split isn't defensible as
-# evidence-based.
-#
-# TN93: "core-e2-nohvr1" is informed by Bartlett et al. 2017's
-# Core-early-E2 TN93 pairwise/connected-components network (same metric and
-# graph algorithm, but a shorter fragment) — the closest available precedent.
-# "core-e2" (HVR1 included) and "ns5b" have no HVR1-inclusive/NS5B TN93 precedent,
-# so they reuse Lamoury et al. 2015's uncorrected-p-distance values as a (slightly
-# conservative, since TN93 >= p-distance for the same pair) approximation.
-REGION_THRESHOLDS_TN93: dict[str, float] = {
-    "e1-e2": 0.03,
-    "e1-e2-nohvr1": 0.03,
-    "core-e2-nohvr1": 0.03,
-    "core-e2": 0.045,
-    "ns5b": 0.015,
-}
-
-# SNP: this pipeline's SNP distance is uncorrected p-distance (fraction of
-# ACGT-comparable sites that differ), the metric Lamoury et al. 2015 used (with a
-# different missing-data rule). The metric is directly comparable, but the study's
-# shorter fragments and ClusterPicker method mean the region thresholds remain
-# literature anchors rather than exact validation of this workflow.
-REGION_THRESHOLDS_SNP: dict[str, float] = {
-    "e1-e2": 0.03,
-    "e1-e2-nohvr1": 0.03,
-    "core-e2-nohvr1": 0.03,
-    "core-e2": 0.045,
-    "ns5b": 0.015,
-}
-
-# An explicit operational default is not the same as a region-specific validated
-# cutoff. E1-E2 uses 0.03 for continuity with collaborator practice and must keep
-# the provisional warning until it has been calibrated for this exact region.
-EVIDENCE_ANCHORED_REGIONS_TN93 = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
-EVIDENCE_ANCHORED_REGIONS_SNP = frozenset({"core-e2-nohvr1", "core-e2", "ns5b"})
-
-# Backward-compat aliases: TN93 was the only metric these names covered originally.
-REGION_THRESHOLDS: dict[str, float] = REGION_THRESHOLDS_TN93
-FALLBACK_THRESHOLD: float = REGION_THRESHOLDS_TN93["e1-e2"]
-FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["e1-e2"]
-
-
-def canonical_threshold_region(region: str) -> str:
-    """Normalize equivalent region spellings before choosing a default cutoff."""
-    canonical = hcv_cluster_prep.expand_region_expression(region)
-    equivalent_expressions = {
-        "e1+e2": "e1-e2",
-        "e1,e2": "e1-e2",
-        "core-e1+e2": "core-e2",
-        "core-e1,e2": "core-e2",
-        "core+e1+e2": "core-e2",
-        "core,e1,e2": "core-e2",
-    }
-    return equivalent_expressions.get(canonical, canonical)
-
-
-def resolve_threshold(region: str, user_threshold: float | None, distance: str = "tn93") -> float:
-    if user_threshold is not None:
-        return user_threshold
-    canonical_region = canonical_threshold_region(region)
-    if distance == "snp":
-        return REGION_THRESHOLDS_SNP.get(canonical_region, FALLBACK_THRESHOLD_SNP)
-    return REGION_THRESHOLDS_TN93.get(canonical_region, FALLBACK_THRESHOLD)
-
-
-def region_threshold_is_evidence_based(region: str, distance: str = "tn93") -> bool:
-    canonical_region = canonical_threshold_region(region)
-    anchored = EVIDENCE_ANCHORED_REGIONS_SNP if distance == "snp" else EVIDENCE_ANCHORED_REGIONS_TN93
-    return canonical_region in anchored
-
-
-def region_threshold_is_explicit(region: str, distance: str = "tn93") -> bool:
-    """Whether the region has a named default rather than the generic fallback."""
-    canonical_region = canonical_threshold_region(region)
-    table = REGION_THRESHOLDS_SNP if distance == "snp" else REGION_THRESHOLDS_TN93
-    return canonical_region in table
-
-
-def compute_snp_distances_detailed(
-    fasta_path: Path,
-) -> list[tuple[str, str, int, int, float]]:
-    records = hcv_cluster_prep.read_fasta_records(fasta_path)
-    results: list[tuple[str, str, int, int, float]] = []
-    acgt = frozenset("ACGT")
-    for i in range(len(records)):
-        id_i = records[i].header.split()[0]
-        seq_i = records[i].sequence.upper()
-        for j in range(i + 1, len(records)):
-            id_j = records[j].header.split()[0]
-            seq_j = records[j].sequence.upper()
-            snp_count = 0
-            comparable_sites = 0
-            for char_i, char_j in zip(seq_i, seq_j):
-                if char_i in acgt and char_j in acgt:
-                    comparable_sites += 1
-                    if char_i != char_j:
-                        snp_count += 1
-            normalized = snp_count / comparable_sites if comparable_sites > 0 else 1.0
-            results.append((id_i, id_j, snp_count, comparable_sites, normalized))
-    return results
-
-
-def compute_snp_distances(fasta_path: Path) -> list[hcv_workflow.DistanceRow]:
-    detailed = compute_snp_distances_detailed(fasta_path)
-    return [
-        hcv_workflow.DistanceRow(id_i, id_j, normalized)
-        for id_i, id_j, _snp_count, _comparable_sites, normalized in detailed
-    ]
-
-
-def write_snp_csv(
-    path: Path,
-    fasta_path: Path,
-    detailed: list[tuple[str, str, int, int, float]] | None = None,
-) -> list[hcv_workflow.DistanceRow]:
-    if detailed is None:
-        detailed = compute_snp_distances_detailed(fasta_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=("source", "target", "distance", "snp_count", "comparable_sites"),
-        )
-        writer.writeheader()
-        for id_i, id_j, snp_count, comparable_sites, normalized in detailed:
-            writer.writerow(
-                {
-                    "source": id_i,
-                    "target": id_j,
-                    "distance": f"{normalized:.10g}",
-                    "snp_count": snp_count,
-                    "comparable_sites": comparable_sites,
-                }
-            )
-    return [
-        hcv_workflow.DistanceRow(id_i, id_j, normalized)
-        for id_i, id_j, _snp_count, _comparable_sites, normalized in detailed
-    ]
-
-
-def write_snp_links_csv(
-    path: Path,
-    detailed: list[tuple[str, str, int, int, float]],
-    threshold: float,
-    snp_count_threshold: int | None = None,
-) -> list[dict[str, str | int | float]]:
-    """Write SNP links, carrying the absolute SNP count alongside the p-distance.
-
-    With snp_count_threshold set, pairs are linked on the raw number of differing
-    sites ("within 30 SNPs") instead of on p-distance. The count is always written
-    either way, so a link can be described in SNPs even when p-distance defined it.
-    """
-    if snp_count_threshold is not None and snp_count_threshold < 0:
-        raise ValueError("--snp-count-threshold must be non-negative")
-
-    links: list[dict[str, str | int | float]] = []
-    for source, target, snp_count, comparable_sites, distance in detailed:
-        if source == target:
-            continue
-        if snp_count_threshold is not None:
-            linked = snp_count <= snp_count_threshold
-        else:
-            linked = distance <= threshold
-        if linked:
-            links.append(
-                {
-                    "source": source,
-                    "target": target,
-                    "distance": distance,
-                    "snp_count": snp_count,
-                    "comparable_sites": comparable_sites,
-                }
-            )
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        csv_writer = csv.DictWriter(
-            handle, fieldnames=("source", "target", "distance", "snp_count", "comparable_sites")
-        )
-        csv_writer.writeheader()
-        for link in links:
-            csv_writer.writerow({**link, "distance": f"{float(link['distance']):.10g}"})
-    return links
-
-
-def _snp_count_summary(links: list[dict[str, str | int | float]]) -> str:
-    """Describe linked pairs in whole SNPs, which is how people talk about them."""
-    if not links:
-        return "no linked pairs"
-    counts = sorted(int(link["snp_count"]) for link in links)
-    sites = sorted(int(link["comparable_sites"]) for link in links)
-    middle = counts[len(counts) // 2]
-    return (
-        f"linked pairs differ by {counts[0]}-{counts[-1]} SNPs (median {middle}) "
-        f"over {sites[0]}-{sites[-1]} comparable sites"
-    )
+from hcv_cluster_methods import (  # noqa: F401  (re-exported for existing callers)
+    REGION_THRESHOLDS_TN93,
+    REGION_THRESHOLDS_SNP,
+    EVIDENCE_ANCHORED_REGIONS_TN93,
+    EVIDENCE_ANCHORED_REGIONS_SNP,
+    REGION_THRESHOLDS,
+    FALLBACK_THRESHOLD,
+    FALLBACK_THRESHOLD_SNP,
+    canonical_threshold_region,
+    resolve_threshold,
+    region_threshold_is_evidence_based,
+    region_threshold_is_explicit,
+    compute_snp_distances_detailed,
+    compute_snp_distances,
+    write_snp_csv,
+    write_snp_links_csv,
+    _snp_count_summary,
+)
 
 
 @contextlib.contextmanager
@@ -629,24 +448,17 @@ def _label_track(args: argparse.Namespace) -> str:
 
 
 def _label_definition(args: argparse.Namespace) -> dict[str, object]:
-    """What a persistent label is valid for: changing any of this changes who clusters."""
-    track = _label_track(args)
-    definition: dict[str, object] = {
-        "metric": track,
-        "region": canonical_threshold_region(args.region),
-        "threshold": resolve_threshold(args.region, args.threshold, distance=track),
-    }
-    definition["region_strategy"] = args.region_strategy
-    if track == "snp" and args.snp_count_threshold is not None:
-        definition["snp_count_threshold"] = args.snp_count_threshold
-    if track == "tn93":
-        definition.update(
-            ambiguities=args.ambiguities,
-            ambiguity_fraction=args.ambiguity_fraction,
-            min_overlap=args.min_overlap,
-            extra_tn93_args=args.extra_tn93_args,
-        )
-    return definition
+    return hcv_cluster_stages.label_definition(
+        _label_track(args),
+        args.region,
+        args.threshold,
+        args.region_strategy,
+        args.ambiguities,
+        args.ambiguity_fraction,
+        args.min_overlap,
+        args.extra_tn93_args,
+        args.snp_count_threshold,
+    )
 
 
 def _check_label_options(args: argparse.Namespace) -> None:
@@ -666,118 +478,54 @@ def _check_label_options(args: argparse.Namespace) -> None:
 
 def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: Path) -> None:
     """Add persistent ``cluster_label`` to the merged cluster table and write label reports."""
-    with clusters_csv.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = list(reader.fieldnames or ())
-        rows = list(reader)
-    partition = {
-        (row["genotype"], row.get(hcv_cluster_variants.BASE_SAMPLE_FIELD) or row["sample_id"]): row[
-            "cluster_id"
-        ]
-        for row in rows
-    }
-    now = datetime.datetime.now()
-    result, table, _registry = hcv_cluster_labels.label_run(
-        args.registry,
-        _label_track(args),
-        _label_definition(args),
-        partition,
-        run_id=now.strftime("%Y%m%dT%H%M%S"),
-        run_date=args.label_date or now.strftime("%Y-%m-%d"),
-        outdir=str(outdir),
-        commit=args.update_registry,
+    hcv_cluster_stages.label_clusters(
+        clusters_csv,
+        registry=args.registry,
+        update_registry=args.update_registry,
+        track=_label_track(args),
+        definition=_label_definition(args),
         prefix=args.label_prefix,
+        label_date=args.label_date,
+        out_clusters=clusters_csv,
+        out_labels=outdir / "cluster_labels.csv",
+        out_changes=outdir / "label_changes.csv",
+        outdir_label=str(outdir),
     )
-    if "cluster_label" not in fieldnames:
-        fieldnames.insert(fieldnames.index("cluster_id") + 1, "cluster_label")
-    for row in rows:
-        member = (row["genotype"], row.get(hcv_cluster_variants.BASE_SAMPLE_FIELD) or row["sample_id"])
-        row["cluster_label"] = result.labels[member]
-    with clusters_csv.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    label_fields = ["label", "track", "genotype", "created_date", "split_from",
-                    "absorbed_labels", "n_members_this_run", "n_members_total"]
-    with (outdir / "cluster_labels.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=label_fields, restval="")
-        writer.writeheader()
-        writer.writerows(table)
-    event_fields = ["run_id", "date", "track", "event", "label", "related_label", "detail"]
-    with (outdir / "label_changes.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=event_fields)
-        writer.writeheader()
-        writer.writerows(result.events)
-
-    counts = {kind: sum(1 for e in result.events if e["event"] == kind) for kind in ("created", "split", "merged")}
-    labelled = [member for member, label in result.labels.items() if label]
-    summary = (
-        f"Cluster labels: {len({partition[member] for member in labelled})} labelled cluster(s) "
-        f"covering {len(labelled)} sequence(s); {counts['created'] + counts['split']} new, "
-        f"{counts['merged']} merged"
-    )
-    if args.update_registry:
-        print(f"{summary}. Registry updated: {args.registry}")
-    else:
-        print(
-            f"{summary}. Registry NOT updated (read-only); new clusters are shown as "
-            f"{hcv_cluster_labels.UNASSIGNED}. Re-run with --update-registry to name them."
-        )
 
 
 def _write_sample_outputs(
     args: argparse.Namespace,
     outdir: Path,
-    input_records: Sequence[hcv_cluster_prep.FastaRecord],
-    variant_plan: hcv_cluster_variants.VariantPlan,
-    genotype_rows: Sequence[Mapping[str, str]],
+    input_path: Path,
     metadata_rows: Sequence[Mapping[str, Any]],
     *,
-    excluded_subtypes: Mapping[str, str] | None = None,
-    qc_by_genotype: Mapping[str, Mapping[str, Mapping[str, str]]] | None = None,
-    validation_failures: Mapping[str, Mapping[str, str]] | None = None,
-    cluster_rows: Sequence[Mapping[str, str]] = (),
+    genotypes: Sequence[str] = (),
+    clusters_csv: Path | None = None,
 ) -> None:
-    """Write the per-sample audit, annotated metadata tables and labelled survivor FASTA.
-
-    Also called when the run stops early (e.g. nothing passed genotyping), because that
-    is exactly when the explanation of what happened to each sample matters most.
-    """
-    audits = hcv_cluster_audit.build_audit(
-        input_records,
-        variant_plan,
-        genotype_rows,
+    """Run the audit stage over the files this run wrote (same code the workflow uses)."""
+    by_genotype = outdir / "by_genotype"
+    paths = {
+        gt: by_genotype / hcv_workflow.safe_genotype_name(gt) for gt in genotypes
+    }
+    variants_csv = outdir / hcv_cluster_variants.VARIANTS_FILENAME
+    resolved = outdir / "input.variants_resolved.fasta"
+    hcv_cluster_stages.write_sample_outputs(
+        outdir,
+        input_fasta=input_path,
+        genotypes_csv=outdir / "genotypes.csv",
+        variants_csv=variants_csv if variants_csv.exists() else None,
+        resolved_fasta=resolved if resolved.exists() else None,
+        qc={gt: d / "prep.qc.csv" for gt, d in paths.items()},
+        validation={gt: d / "prep.genotype_validation.csv" for gt, d in paths.items()},
+        decisions={gt: d / "variant_decisions.csv" for gt, d in paths.items() if (d / "variant_decisions.csv").exists()},
+        clusters_csv=clusters_csv,
+        metadata_rows=metadata_rows,
         min_query_coverage=args.min_query_coverage,
         min_identity=args.min_identity,
         min_coverage=args.min_coverage,
-        excluded_subtypes=excluded_subtypes,
-        qc_by_genotype=qc_by_genotype,
-        validation_failures=validation_failures,
-        cluster_rows=cluster_rows,
+        genotype_filter=args.genotype,
+        reference_map=args.reference_map,
     )
-    hcv_cluster_audit.write_audit_csv(audits, outdir / hcv_cluster_audit.AUDIT_FILENAME)
-    hcv_cluster_audit.write_metadata_tables(
-        audits,
-        metadata_rows,
-        outdir / hcv_cluster_audit.METADATA_ALL_FILENAME,
-        outdir / hcv_cluster_audit.METADATA_SURVIVING_FILENAME,
-    )
-    hcv_cluster_audit.write_surviving_fasta(
-        audits, variant_plan.records, outdir / hcv_cluster_audit.SURVIVING_FASTA_FILENAME
-    )
-    print(f"Sample audit: {hcv_cluster_audit.summarize(audits)} ({hcv_cluster_audit.AUDIT_FILENAME})")
-    absent = sorted(
-        {str(row["sample_id"]) for row in metadata_rows}.difference(
-            audit.base_sample_id for audit in audits
-        )
-    )
-    if absent:
-        print(
-            f"NOTE: metadata has {len(absent)} sample(s) not present in the input FASTA: "
-            f"{_summarize_ids(absent)}",
-            file=sys.stderr,
-        )
 
 
 def command_run(args: argparse.Namespace) -> int:
@@ -856,12 +604,12 @@ def command_run(args: argparse.Namespace) -> int:
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
 
     # --- Repeated FASTA IDs (e.g. mixed infections) ---
-    input_records = hcv_cluster_variants.read_input_records(input_path)
-    variant_plan = hcv_cluster_variants.resolve_duplicate_ids(input_records)
+    _input_records, variant_plan = hcv_cluster_stages.resolve_ids(input_path, None, None)
     genotype_input = input_path
     if variant_plan.has_duplicates:
         genotype_input = outdir / "input.variants_resolved.fasta"
         hcv_cluster_prep.write_fasta_records(variant_plan.records, genotype_input)
+        hcv_cluster_variants.write_variants_csv(variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME)
         repeats = sum(1 for v in variant_plan.variants if v.status == "dropped_identical_repeat")
         mixed = variant_plan.mixed_sample_ids()
         print(
@@ -897,24 +645,12 @@ def command_run(args: argparse.Namespace) -> int:
         return rc
 
     genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
-    hcv_cluster_variants.record_genotypes(variant_plan, genotype_rows)
     genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
-    excluded_subtypes: dict[str, str] = {}
     if args.genotype:
         requested = set(args.genotype)
-        excluded_subtypes.update(
-            {
-                genotype: f"Subtype {genotype} excluded by --genotype ({', '.join(args.genotype)})"
-                for genotype in genotypes
-                if genotype not in requested
-            }
-        )
         genotypes = [genotype for genotype in genotypes if genotype in requested]
     if not genotypes:
-        _write_sample_outputs(
-            args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
-            excluded_subtypes=excluded_subtypes,
-        )
+        _write_sample_outputs(args, outdir, input_path, metadata_rows)
         raise RuntimeError("No passing genotype assignments were available to process")
 
     # A detected subtype with no configured reference must not abort the whole run and
@@ -932,21 +668,9 @@ def command_run(args: argparse.Namespace) -> int:
             "these sequences are skipped. Supply one with --reference-map to include them.",
             file=sys.stderr,
         )
-        excluded_subtypes.update(
-            {
-                genotype: (
-                    f"No reference genome configured for subtype {genotype}; "
-                    "supply one with --reference-map"
-                )
-                for genotype in unsupported
-            }
-        )
         genotypes = [genotype for genotype in genotypes if genotype in reference_catalog]
     if not genotypes:
-        _write_sample_outputs(
-            args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
-            excluded_subtypes=excluded_subtypes,
-        )
+        _write_sample_outputs(args, outdir, input_path, metadata_rows)
         raise RuntimeError("No passing genotype assignments have a configured reference genome")
 
     gt_counts = {
@@ -982,9 +706,6 @@ def command_run(args: argparse.Namespace) -> int:
     snp_cluster_tables: list[tuple[str, Path]] = []
     link_tables: list[tuple[str, Path]] = []
     snp_link_tables: list[tuple[str, Path]] = []
-    qc_by_genotype: dict[str, dict[str, dict[str, str]]] = {}
-    validation_failures: dict[str, dict[str, str]] = {}
-
     for genotype in genotypes:
         print(f"Analysing subtype: {genotype}")
 
@@ -1043,14 +764,10 @@ def command_run(args: argparse.Namespace) -> int:
             return rc
 
         qc_path = Path(f"{prefix}.qc.csv")
-        qc_by_genotype[genotype] = hcv_cluster_audit.read_qc_rows(qc_path)
         validation_path = Path(f"{prefix}.genotype_validation.csv")
-        validation_failures[genotype] = {
-            row["sample_id"]: row["reason"] for row in _read_csv_rows(validation_path)
-        } if validation_path.exists() else {}
-        if validation_failures[genotype]:
+        if validation_path.exists():
             print(
-                f"--> {len(validation_failures[genotype])} sequence(s) excluded: their k-mer "
+                f"--> {len(_read_csv_rows(validation_path))} sequence(s) excluded: their k-mer "
                 f"profile conflicts with subtype {genotype} (see {validation_path.name})"
             )
         if qc_path.exists():
@@ -1060,13 +777,11 @@ def command_run(args: argparse.Namespace) -> int:
 
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
         if variant_plan.has_duplicates:
-            dropped = hcv_cluster_variants.select_same_genotype(
-                variant_plan, genotype, qc_path, args.duplicate_selection
+            dropped = hcv_cluster_stages.select_variants(
+                variant_plan, genotype_rows, genotype, qc_path, args.duplicate_selection,
+                clustering_fasta, out_decisions=genotype_dir / "variant_decisions.csv",
             )
             if dropped:
-                hcv_cluster_variants.remove_from_fasta(
-                    clustering_fasta, {variant.sequence_id for variant in dropped}
-                )
                 print(
                     f"--> {len(dropped)} same-sample variant(s) dropped in favour of a "
                     f"better sequence ({args.duplicate_selection})"
@@ -1081,35 +796,20 @@ def command_run(args: argparse.Namespace) -> int:
             tn93_csv = genotype_dir / "tn93.csv"
             links_csv = genotype_dir / "links.csv"
             clusters_csv = genotype_dir / "clusters.csv"
-            tn93_args = argparse.Namespace(
-                input=clustering_fasta,
-                output=tn93_csv,
+            hcv_cluster_stages.cluster_sequences(
+                "tn93",
+                clustering_fasta,
+                out_distances=tn93_csv,
+                out_links=links_csv,
+                out_clusters=clusters_csv,
+                threshold=threshold,
                 tn93=args.tn93,
-                tn93_threshold=threshold,
                 ambiguities=args.ambiguities,
                 ambiguity_fraction=args.ambiguity_fraction,
                 min_overlap=args.min_overlap,
-                quiet=not args.verbose,
                 extra_tn93_args=args.extra_tn93_args,
-                dry_run=False,
+                quiet=not args.verbose,
             )
-            rc = hcv_workflow.run_tn93(tn93_args)
-            if rc:
-                return rc
-            link_args = argparse.Namespace(
-                distances=tn93_csv,
-                output=links_csv,
-                threshold=threshold,
-                include_self=False,
-            )
-            hcv_workflow.command_link(link_args)
-            cluster_args = argparse.Namespace(
-                links=links_csv,
-                output=clusters_csv,
-                nodes_fasta=clustering_fasta,
-                nodes_file=None,
-            )
-            hcv_workflow.command_cluster(cluster_args)
             cluster_tables.append((genotype, clusters_csv))
             link_tables.append((genotype, links_csv))
             cl_st = _read_cluster_stats(clusters_csv)
@@ -1122,27 +822,21 @@ def command_run(args: argparse.Namespace) -> int:
         if args.distance in ("snp", "both"):
             snp_threshold = resolve_threshold(args.region, args.threshold, distance="snp")
             snp_csv = genotype_dir / "snp.csv"
-            snp_detailed = compute_snp_distances_detailed(clustering_fasta)
-            write_snp_csv(snp_csv, clustering_fasta, snp_detailed)
             if args.distance == "snp":
                 snp_links_csv = genotype_dir / "links.csv"
                 snp_clusters_csv = genotype_dir / "clusters.csv"
             else:
                 snp_links_csv = genotype_dir / "snp_links.csv"
                 snp_clusters_csv = genotype_dir / "snp_clusters.csv"
-            snp_links = write_snp_links_csv(
-                snp_links_csv,
-                snp_detailed,
+            snp_links = hcv_cluster_stages.cluster_sequences(
+                "snp",
+                clustering_fasta,
+                out_distances=snp_csv,
+                out_links=snp_links_csv,
+                out_clusters=snp_clusters_csv,
                 threshold=snp_threshold,
                 snp_count_threshold=args.snp_count_threshold,
             )
-            cluster_args = argparse.Namespace(
-                links=snp_links_csv,
-                output=snp_clusters_csv,
-                nodes_fasta=clustering_fasta,
-                nodes_file=None,
-            )
-            hcv_workflow.command_cluster(cluster_args)
             if args.distance == "snp":
                 cluster_tables.append((genotype, snp_clusters_csv))
                 link_tables.append((genotype, snp_links_csv))
@@ -1164,32 +858,24 @@ def command_run(args: argparse.Namespace) -> int:
 
     primary_clusters_csv = outdir / "clusters.csv"
     primary_links_csv = outdir / "links.csv"
-    hcv_workflow.merge_cluster_tables(cluster_tables, primary_clusters_csv)
-    hcv_workflow.merge_link_tables(link_tables, primary_links_csv)
+    variants_csv = outdir / hcv_cluster_variants.VARIANTS_FILENAME
+    hcv_cluster_stages.merge_tables(
+        dict(cluster_tables), dict(link_tables), primary_clusters_csv, primary_links_csv, variants_csv
+    )
     if args.distance == "both":
-        snp_clusters_csv = outdir / "clusters.snp.csv"
-        snp_links_csv = outdir / "links.snp.csv"
-        hcv_workflow.merge_cluster_tables(snp_cluster_tables, snp_clusters_csv)
-        hcv_workflow.merge_link_tables(snp_link_tables, snp_links_csv)
-    merged_cluster_tables = [primary_clusters_csv]
-    if args.distance == "both":
-        merged_cluster_tables.append(outdir / "clusters.snp.csv")
-    for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables] + merged_cluster_tables:
-        hcv_cluster_variants.annotate_cluster_table(clusters_path, variant_plan)
-    if variant_plan.has_duplicates:
-        hcv_cluster_variants.write_variants_csv(
-            variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME
+        hcv_cluster_stages.merge_tables(
+            dict(snp_cluster_tables), dict(snp_link_tables),
+            outdir / "clusters.snp.csv", outdir / "links.snp.csv", variants_csv,
         )
+    for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables]:
+        hcv_cluster_stages.annotate_clusters(clusters_path, variants_csv)
 
     if args.registry is not None:
         _apply_cluster_labels(args, outdir, primary_clusters_csv)
 
     _write_sample_outputs(
-        args, outdir, input_records, variant_plan, genotype_rows, metadata_rows,
-        excluded_subtypes=excluded_subtypes,
-        qc_by_genotype=qc_by_genotype,
-        validation_failures=validation_failures,
-        cluster_rows=_read_csv_rows(primary_clusters_csv),
+        args, outdir, input_path, metadata_rows,
+        genotypes=genotypes, clusters_csv=primary_clusters_csv,
     )
 
     _render_requested_plots(
@@ -1457,8 +1143,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--refs-dir",
         metavar="PATH",
         type=Path,
-        default=Path("refs"),
-        help=adv("Directory for cached reference GenBank/FASTA files (default: refs)"),
+        default=hcv_cluster_prep.DEFAULT_REFS_DIR,
+        help=adv("Directory of reference GenBank/FASTA files (default: the set bundled with the repository)"),
     )
     run_parser.add_argument(
         "--reference-map",
@@ -1685,8 +1371,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--refs-dir",
         metavar="PATH",
         type=Path,
-        default=Path("refs"),
-        help="Reference cache directory (default: refs)",
+        default=hcv_cluster_prep.DEFAULT_REFS_DIR,
+        help="Reference directory (default: the set bundled with the repository)",
     )
     refs_parser.add_argument(
         "--reference-map",

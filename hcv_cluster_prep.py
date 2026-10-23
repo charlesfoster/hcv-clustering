@@ -137,6 +137,11 @@ class HcvPrepError(RuntimeError):
     """Raised for user-facing preprocessing failures."""
 
 
+# Reference GenBank/FASTA records for every catalogued subtype ship with the repository,
+# so runs (including containerised and offline ones) never need the network. Only a
+# --reference-map accession that is not bundled is downloaded into the refs directory.
+DEFAULT_REFS_DIR = Path(__file__).resolve().parent / "reference_data" / "genbank"
+
 DEFAULT_REFERENCE_CATALOG = {
     "1a": ReferenceSpec("1a", "EF407457.1"),
     "1b": ReferenceSpec("1b", "EU781828.1"),
@@ -2339,7 +2344,11 @@ def command_prep_align(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--refs-dir", default="refs", help="Directory for cached reference GenBank/FASTA files")
+    common.add_argument(
+        "--refs-dir",
+        default=str(DEFAULT_REFS_DIR),
+        help="Directory of reference GenBank/FASTA files (default: the bundled set; missing accessions are downloaded here)",
+    )
     common.add_argument("--reference-map", help="JSON file extending or overriding genotype-to-accession mappings")
     common.add_argument("--ncbi-email", default=os.environ.get("NCBI_EMAIL"), help="Email passed to NCBI E-utilities")
     common.add_argument("--force-download", action="store_true", help="Re-download cached NCBI reference records")

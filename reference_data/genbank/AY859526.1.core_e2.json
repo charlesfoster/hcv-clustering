@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=296-868; e2=1445-2548",
+  "coordinate_source": "genbank_feature_annotation",
+  "core_e2_end": 2548,
+  "core_e2_length": 2253,
+  "core_e2_start": 296,
+  "genotype": "6a",
+  "reference_accession": "AY859526.1"
+}

@@ -1,0 +1,83 @@
+{
+  "genotype": "6t",
+  "reference_accession": "EF632071.1",
+  "regions": {
+    "cds": {
+      "detail": "CDS:polyprotein precursor:325-9375",
+      "end": 9375,
+      "length": 9051,
+      "source": "polyprotein_cds_feature",
+      "start": 325
+    },
+    "core": {
+      "detail": "template=AY859526.1.gb; template_region=core:296-868; target_aa=1-191",
+      "end": 897,
+      "length": 573,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 325
+    },
+    "e1": {
+      "detail": "template=AY859526.1.gb; template_region=e1:869-1444; target_aa=192-383",
+      "end": 1473,
+      "length": 576,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 898
+    },
+    "e2": {
+      "detail": "template=AY859526.1.gb; template_region=e2:1445-2548; target_aa=384-747",
+      "end": 2565,
+      "length": 1092,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 1474
+    },
+    "ns2": {
+      "detail": "template=AY859526.1.gb; template_region=ns2:2738-3388; target_aa=811-1027",
+      "end": 3405,
+      "length": 651,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 2755
+    },
+    "ns3": {
+      "detail": "template=AY859526.1.gb; template_region=ns3:3389-5281; target_aa=1028-1658",
+      "end": 5298,
+      "length": 1893,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 3406
+    },
+    "ns4a": {
+      "detail": "template=AY859526.1.gb; template_region=ns4a:5282-5443; target_aa=1659-1712",
+      "end": 5460,
+      "length": 162,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 5299
+    },
+    "ns4b": {
+      "detail": "template=AY859526.1.gb; template_region=ns4b:5444-6226; target_aa=1713-1973",
+      "end": 6243,
+      "length": 783,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 5461
+    },
+    "ns5a": {
+      "detail": "template=AY859526.1.gb; template_region=ns5a:6227-7579; target_aa=1974-2425",
+      "end": 7599,
+      "length": 1356,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 6244
+    },
+    "ns5b": {
+      "detail": "template=AY859526.1.gb; template_region=ns5b:7580-9352; target_aa=2426-3016",
+      "end": 9372,
+      "length": 1773,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 7600
+    },
+    "p7": {
+      "detail": "template=AY859526.1.gb; template_region=p7:2549-2737; target_aa=748-810",
+      "end": 2754,
+      "length": 189,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 2566
+    }
+  }
+}

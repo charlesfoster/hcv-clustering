@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=340-912; e2=1492-2592",
+  "coordinate_source": "polyprotein_aa_boundary_transfer",
+  "core_e2_end": 2592,
+  "core_e2_length": 2253,
+  "core_e2_start": 340,
+  "genotype": "3e",
+  "reference_accession": "KJ470618.1"
+}

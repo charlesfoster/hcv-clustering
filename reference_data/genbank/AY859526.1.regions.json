@@ -1,0 +1,83 @@
+{
+  "genotype": "6a",
+  "reference_accession": "AY859526.1",
+  "regions": {
+    "cds": {
+      "detail": "CDS:polyprotein:296-9355",
+      "end": 9355,
+      "length": 9060,
+      "source": "polyprotein_cds_feature",
+      "start": 296
+    },
+    "core": {
+      "detail": "mat_peptide:putative core protein:296-868",
+      "end": 868,
+      "length": 573,
+      "source": "genbank_feature_annotation",
+      "start": 296
+    },
+    "e1": {
+      "detail": "mat_peptide:putative E1 protein:869-1444",
+      "end": 1444,
+      "length": 576,
+      "source": "genbank_feature_annotation",
+      "start": 869
+    },
+    "e2": {
+      "detail": "mat_peptide:putative short E2 protein:1445-2548",
+      "end": 2548,
+      "length": 1104,
+      "source": "genbank_feature_annotation",
+      "start": 1445
+    },
+    "ns2": {
+      "detail": "mat_peptide:putative NS2 protein:2738-3388",
+      "end": 3388,
+      "length": 651,
+      "source": "genbank_feature_annotation",
+      "start": 2738
+    },
+    "ns3": {
+      "detail": "mat_peptide:putative NS3 protein:3389-5281",
+      "end": 5281,
+      "length": 1893,
+      "source": "genbank_feature_annotation",
+      "start": 3389
+    },
+    "ns4a": {
+      "detail": "mat_peptide:putative NS4A protein:5282-5443",
+      "end": 5443,
+      "length": 162,
+      "source": "genbank_feature_annotation",
+      "start": 5282
+    },
+    "ns4b": {
+      "detail": "mat_peptide:putative NS4B protein:5444-6226",
+      "end": 6226,
+      "length": 783,
+      "source": "genbank_feature_annotation",
+      "start": 5444
+    },
+    "ns5a": {
+      "detail": "mat_peptide:putative NS5A protein:6227-7579",
+      "end": 7579,
+      "length": 1353,
+      "source": "genbank_feature_annotation",
+      "start": 6227
+    },
+    "ns5b": {
+      "detail": "mat_peptide:putative NS5B protein:7580-9352",
+      "end": 9352,
+      "length": 1773,
+      "source": "genbank_feature_annotation",
+      "start": 7580
+    },
+    "p7": {
+      "detail": "mat_peptide:putative p7 protein:2549-2737",
+      "end": 2737,
+      "length": 189,
+      "source": "genbank_feature_annotation",
+      "start": 2549
+    }
+  }
+}

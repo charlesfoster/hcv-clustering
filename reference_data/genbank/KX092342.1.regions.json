@@ -1,0 +1,83 @@
+{
+  "genotype": "7b",
+  "reference_accession": "KX092342.1",
+  "regions": {
+    "cds": {
+      "detail": "CDS:polyprotein:343-9382",
+      "end": 9382,
+      "length": 9040,
+      "source": "polyprotein_cds_feature",
+      "start": 343
+    },
+    "core": {
+      "detail": "mat_peptide:core protein:343-915",
+      "end": 915,
+      "length": 573,
+      "source": "genbank_feature_annotation",
+      "start": 343
+    },
+    "e1": {
+      "detail": "mat_peptide:E1 protein:916-1497",
+      "end": 1497,
+      "length": 582,
+      "source": "genbank_feature_annotation",
+      "start": 916
+    },
+    "e2": {
+      "detail": "mat_peptide:E2 protein:1498-2592",
+      "end": 2592,
+      "length": 1095,
+      "source": "genbank_feature_annotation",
+      "start": 1498
+    },
+    "ns2": {
+      "detail": "mat_peptide:NS2 protein:2782-3432",
+      "end": 3432,
+      "length": 651,
+      "source": "genbank_feature_annotation",
+      "start": 2782
+    },
+    "ns3": {
+      "detail": "mat_peptide:NS3 protein:3433-5325",
+      "end": 5325,
+      "length": 1893,
+      "source": "genbank_feature_annotation",
+      "start": 3433
+    },
+    "ns4a": {
+      "detail": "mat_peptide:NS4a protein:5326-5487",
+      "end": 5487,
+      "length": 162,
+      "source": "genbank_feature_annotation",
+      "start": 5326
+    },
+    "ns4b": {
+      "detail": "mat_peptide:NS4B protein:5488-6270",
+      "end": 6270,
+      "length": 783,
+      "source": "genbank_feature_annotation",
+      "start": 5488
+    },
+    "ns5a": {
+      "detail": "mat_peptide:NS5A protein:6271-7608",
+      "end": 7608,
+      "length": 1338,
+      "source": "genbank_feature_annotation",
+      "start": 6271
+    },
+    "ns5b": {
+      "detail": "mat_peptide:NS5B protein:7609-9382",
+      "end": 9382,
+      "length": 1774,
+      "source": "genbank_feature_annotation",
+      "start": 7609
+    },
+    "p7": {
+      "detail": "mat_peptide:p7 protein:2593-2781",
+      "end": 2781,
+      "length": 189,
+      "source": "genbank_feature_annotation",
+      "start": 2593
+    }
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "genotype": "3a",
+  "reference_accession": "D17763.1",
+  "regions": {
+    "cds": {
+      "detail": "CDS:polyprotein:340-9405",
+      "end": 9405,
+      "length": 9066,
+      "source": "polyprotein_cds_feature",
+      "start": 340
+    },
+    "core": {
+      "detail": "mat_peptide:C:340-912",
+      "end": 912,
+      "length": 573,
+      "source": "genbank_feature_annotation",
+      "start": 340
+    },
+    "e1": {
+      "detail": "mat_peptide:E1:913-1488",
+      "end": 1488,
+      "length": 576,
+      "source": "genbank_feature_annotation",
+      "start": 913
+    },
+    "e2": {
+      "detail": "annotation=mat_peptide:E2/NS1:1489-2544; corrected_by=template=AY859526.1.gb; template_region=e2:1445-2548; target_aa=385-752",
+      "end": 2595,
+      "length": 1107,
+      "source": "genbank_feature_annotation_corrected",
+      "start": 1489
+    },
+    "ns2": {
+      "detail": "annotation=mat_peptide:NS2:2545-3375; corrected_by=template=AY859526.1.gb; template_region=ns2:2738-3388; target_aa=816-1032",
+      "end": 3435,
+      "length": 651,
+      "source": "genbank_feature_annotation_corrected",
+      "start": 2785
+    },
+    "ns3": {
+      "detail": "annotation=mat_peptide:NS3:3376-5328; corrected_by=template=AY859526.1.gb; template_region=ns3:3389-5281; target_aa=1033-1663",
+      "end": 5328,
+      "length": 1893,
+      "source": "genbank_feature_annotation_corrected",
+      "start": 3436
+    },
+    "ns4a": {
+      "detail": "mat_peptide:NS4a:5329-5490",
+      "end": 5490,
+      "length": 162,
+      "source": "genbank_feature_annotation",
+      "start": 5329
+    },
+    "ns4b": {
+      "detail": "mat_peptide:NS4b:5491-6273",
+      "end": 6273,
+      "length": 783,
+      "source": "genbank_feature_annotation",
+      "start": 5491
+    },
+    "ns5a": {
+      "detail": "mat_peptide:NS5a:6274-7629",
+      "end": 7629,
+      "length": 1356,
+      "source": "genbank_feature_annotation",
+      "start": 6274
+    },
+    "ns5b": {
+      "detail": "mat_peptide:NS5b:7630-9402",
+      "end": 9402,
+      "length": 1773,
+      "source": "genbank_feature_annotation",
+      "start": 7630
+    },
+    "p7": {
+      "detail": "template=AY859526.1.gb; template_region=p7:2549-2737; target_aa=753-815",
+      "end": 2784,
+      "length": 189,
+      "source": "polyprotein_aa_boundary_transfer",
+      "start": 2596
+    }
+  }
+}

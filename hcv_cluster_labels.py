@@ -346,13 +346,18 @@ def label_run(
     outdir: str,
     commit: bool,
     prefix: str = DEFAULT_PREFIX,
+    output_directory: Path | None = None,
 ) -> tuple[LabelResult, list[dict[str, str | int]], Registry]:
     """Label a partition against the registry in ``directory``; save only if ``commit``.
+
+    ``output_directory`` saves the updated registry elsewhere instead of in place, which is
+    what a workflow process needs because its staged input directory is read-only.
 
     Without ``commit`` the registry on disk is untouched and clusters that would receive a
     brand-new label are reported as ``UNASSIGNED`` instead of a name that was never saved.
     """
-    with locked(directory) if commit else contextlib.nullcontext():
+    target = output_directory or directory
+    with locked(target) if commit else contextlib.nullcontext():
         registry = load_registry(directory)
         working = registry if commit else copy.deepcopy(registry)
         result = assign_labels(
@@ -380,5 +385,5 @@ def label_run(
         )
         table = label_table(working, track, result.labels)
         if commit:
-            save_registry(working, directory)
+            save_registry(working, target)
     return result, table, working

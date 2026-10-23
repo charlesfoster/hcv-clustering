@@ -254,7 +254,7 @@ nextflow run main.nf -profile docker --input samples.fasta --outdir results
 nextflow run main.nf -profile test,docker --outdir test_results
 ```
 
-Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed. Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
+Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed, and `--reuse_alignments <previous outdir>` to re-align only new or changed sequences (the same behaviour as `--reuse-alignments` on the CLI). Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
 
 To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
 

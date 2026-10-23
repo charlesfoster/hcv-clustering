@@ -67,7 +67,7 @@ process PREP_ALIGN {
         saveAs: { fn -> fn.endsWith(".prep.clustering.fasta") ? null : fn.replaceFirst(/^[^.]+\./, "") }
 
     input:
-    tuple val(genotype), path(genotype_fasta)
+    tuple val(genotype), path(genotype_fasta), path(cache, stageAs: "cache/*")
 
     output:
     tuple val(genotype), path("${genotype}.prep.clustering.fasta"), emit: clustering
@@ -87,6 +87,7 @@ process PREP_ALIGN {
         --threads ${task.cpus} \\
         --genotype-validation ${params.genotype_validation} \\
         --genotype-validation-kmer-size ${params.genotype_validation_kmer_size} \\
+        ${cache ? '--cached-alignment cache/prep.aligned.fasta' : ''} \\
         ${optionally('--region', params.region)} \\
         ${optionally('--refs-dir', params.refs_dir)} \\
         ${optionally('--reference-map', params.reference_map)} \\

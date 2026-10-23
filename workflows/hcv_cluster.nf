@@ -18,9 +18,18 @@ workflow HCV_CLUSTER {
     GENOTYPE(RESOLVE_IDS.out.fasta)
 
     // One channel item per subtype that can be analysed (plan-genotypes set the rest aside).
+    // With --reuse_alignments <previous outdir>, a subtype's earlier alignment (and its
+    // fingerprint file) is staged so that only new or changed sequences go to MAFFT.
     genotype_fastas = GENOTYPE.out.fastas
         .flatten()
-        .map { f -> tuple(f.baseName.replaceFirst(/^hcv_/, ''), f) }
+        .map { f ->
+            def gt = f.baseName.replaceFirst(/^hcv_/, '')
+            def cached = params.reuse_alignments
+                ? ["prep.aligned.fasta", "prep.aligned.fasta.meta.json"]
+                    .collect { file("${params.reuse_alignments}/by_genotype/${gt}/${it}") }
+                : []
+            tuple(gt, f, cached.every { it.exists() } ? cached : [])
+        }
 
     PREP_ALIGN(genotype_fastas)
     SELECT_VARIANTS(

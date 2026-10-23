@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import hcv_cluster_labels as labels
+from hcv_cluster import labels
 
 DEF = {"metric": "tn93", "region": "e1-e2", "threshold": 0.03}
 
@@ -161,7 +161,7 @@ def test_absorbed_labels_follow_merge_chains() -> None:
 
 
 def test_plots_name_clusters_by_persistent_label_and_keep_run_local_ids_otherwise() -> None:
-    import hcv_cluster_viz as viz
+    from hcv_cluster import viz
 
     merged = [
         {"sample_id": "a", "cluster_id": "1a_C0001", "cluster_label": "HCV-2608-001", "cluster_size": "2"},

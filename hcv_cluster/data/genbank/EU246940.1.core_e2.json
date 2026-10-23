@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=314-886; e2=1463-2560",
+  "coordinate_source": "polyprotein_aa_boundary_transfer",
+  "core_e2_end": 2560,
+  "core_e2_length": 2247,
+  "core_e2_start": 314,
+  "genotype": "6u",
+  "reference_accession": "EU246940.1"
+}

@@ -2,8 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import hcv_cluster
-import hcv_workflow
+from hcv_cluster import cli, workflow
 
 
 # ---------------------------------------------------------------------------
@@ -39,20 +38,20 @@ def test_resolve_threshold_defaults_and_evidence_flag(
     region: str, distance: str, expected: float | None, evidence_based: bool | None
 ) -> None:
     if expected is None:  # unevidenced SNP region -> SNP-specific fallback
-        expected = hcv_cluster.FALLBACK_THRESHOLD_SNP
-    assert hcv_cluster.resolve_threshold(region, None, distance=distance) == expected
+        expected = cli.FALLBACK_THRESHOLD_SNP
+    assert cli.resolve_threshold(region, None, distance=distance) == expected
     if evidence_based is not None:
         assert (
-            hcv_cluster.region_threshold_is_evidence_based(region, distance=distance)
+            cli.region_threshold_is_evidence_based(region, distance=distance)
             is evidence_based
         )
 
 
 def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
-    assert hcv_cluster.resolve_threshold("cds", None) == hcv_cluster.FALLBACK_THRESHOLD
-    assert hcv_cluster.region_threshold_is_evidence_based("cds") is False
-    assert hcv_cluster.region_threshold_is_explicit("cds") is False
-    assert hcv_cluster.region_threshold_is_explicit("e1-e2") is True
+    assert cli.resolve_threshold("cds", None) == cli.FALLBACK_THRESHOLD
+    assert cli.region_threshold_is_evidence_based("cds") is False
+    assert cli.region_threshold_is_explicit("cds") is False
+    assert cli.region_threshold_is_explicit("e1-e2") is True
 
 
 @pytest.mark.parametrize(
@@ -63,7 +62,7 @@ def test_resolve_threshold_unevidenced_region_returns_fallback() -> None:
     ],
 )
 def test_resolve_threshold_user_value_wins(region: str, distance: str, user_value: float) -> None:
-    assert hcv_cluster.resolve_threshold(region, user_value, distance=distance) == user_value
+    assert cli.resolve_threshold(region, user_value, distance=distance) == user_value
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +88,7 @@ def test_compute_snp_distances_detailed_counts(tmp_path: Path) -> None:
     fasta = tmp_path / "test.fasta"
     fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
 
-    results = hcv_cluster.compute_snp_distances_detailed(fasta)
+    results = cli.compute_snp_distances_detailed(fasta)
 
     assert len(results) == 1
     id_i, id_j, snp_count, comparable_sites, normalized = results[0]
@@ -105,7 +104,7 @@ def test_compute_snp_distances_identical_sequences(tmp_path: Path) -> None:
     fasta = tmp_path / "test.fasta"
     fasta.write_text(_ALIGNED_FASTA_IDENTICAL)
 
-    rows = hcv_cluster.compute_snp_distances(fasta)
+    rows = cli.compute_snp_distances(fasta)
 
     assert len(rows) == 1
     assert rows[0].distance == 0.0
@@ -121,8 +120,8 @@ def test_write_snp_csv_parseable_by_parse_distance_table(tmp_path: Path) -> None
     fasta.write_text(_ALIGNED_FASTA_TWO_SEQS)
     out_csv = tmp_path / "snp.csv"
 
-    written_rows = hcv_cluster.write_snp_csv(out_csv, fasta)
-    parsed_rows = hcv_workflow.parse_distance_table(out_csv)
+    written_rows = cli.write_snp_csv(out_csv, fasta)
+    parsed_rows = workflow.parse_distance_table(out_csv)
 
     assert len(parsed_rows) == len(written_rows)
     for parsed, written in zip(parsed_rows, written_rows):
@@ -137,7 +136,7 @@ def test_write_snp_csv_parseable_by_parse_distance_table(tmp_path: Path) -> None
 
 
 def test_run_parser_uses_e1_e2_and_tolerant_alignment_defaults() -> None:
-    args = hcv_cluster.build_parser().parse_args(["run", "--input", "samples.fasta"])
+    args = cli.build_parser().parse_args(["run", "--input", "samples.fasta"])
     assert args.region == "e1-e2"
     assert args.min_coverage == 0.7
     assert args.minimap2_preset == "asm20"
@@ -145,7 +144,7 @@ def test_run_parser_uses_e1_e2_and_tolerant_alignment_defaults() -> None:
 
 @pytest.mark.parametrize("argv", [["--help-advanced"], []], ids=["help-advanced", "empty-argv"])
 def test_main_without_subcommand_returns_zero(argv: list[str]) -> None:
-    assert hcv_cluster.main(argv) == 0
+    assert cli.main(argv) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +163,7 @@ def _detailed(pairs):
 def test_write_snp_links_csv_carries_absolute_counts(tmp_path: Path) -> None:
     out_csv = tmp_path / "snp_links.csv"
 
-    links = hcv_cluster.write_snp_links_csv(
+    links = cli.write_snp_links_csv(
         out_csv, _detailed([("a", "b", 30, 2000)]), threshold=0.03
     )
 
@@ -176,7 +175,7 @@ def test_write_snp_links_csv_carries_absolute_counts(tmp_path: Path) -> None:
 
 def test_write_snp_links_csv_thresholds_on_p_distance_by_default(tmp_path: Path) -> None:
     # Same 30 SNPs, but over few enough sites that p-distance exceeds the threshold.
-    links = hcv_cluster.write_snp_links_csv(
+    links = cli.write_snp_links_csv(
         tmp_path / "l.csv",
         _detailed([("a", "b", 30, 2000), ("c", "d", 30, 500)]),
         threshold=0.03,
@@ -206,7 +205,7 @@ def test_snp_count_threshold_links_on_raw_count(
     tmp_path: Path, pairs: list[tuple], snp_count_threshold: int, expected: list[tuple]
 ) -> None:
     """A pair p-distance rejects is linked when the user asks for '<=30 SNPs'."""
-    links = hcv_cluster.write_snp_links_csv(
+    links = cli.write_snp_links_csv(
         tmp_path / "l.csv",
         _detailed(pairs),
         threshold=0.03,
@@ -218,7 +217,7 @@ def test_snp_count_threshold_links_on_raw_count(
 
 def test_negative_snp_count_threshold_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="non-negative"):
-        hcv_cluster.write_snp_links_csv(
+        cli.write_snp_links_csv(
             tmp_path / "l.csv", _detailed([("a", "b", 1, 100)]), threshold=0.03,
             snp_count_threshold=-1,
         )
@@ -226,11 +225,11 @@ def test_negative_snp_count_threshold_is_rejected(tmp_path: Path) -> None:
 
 def test_snp_links_are_parseable_for_clustering(tmp_path: Path) -> None:
     out_csv = tmp_path / "snp_links.csv"
-    hcv_cluster.write_snp_links_csv(
+    cli.write_snp_links_csv(
         out_csv, _detailed([("a", "b", 3, 1000)]), threshold=0.03
     )
 
-    parsed = hcv_workflow.parse_links(out_csv)
+    parsed = workflow.parse_links(out_csv)
 
     assert [(link.source, link.target) for link in parsed] == [("a", "b")]
 
@@ -238,11 +237,11 @@ def test_snp_links_are_parseable_for_clustering(tmp_path: Path) -> None:
 def test_merge_link_tables_preserves_snp_columns(tmp_path: Path) -> None:
     first = tmp_path / "gt1.csv"
     second = tmp_path / "gt2.csv"
-    hcv_cluster.write_snp_links_csv(first, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
-    hcv_cluster.write_snp_links_csv(second, _detailed([("c", "d", 7, 1200)]), threshold=0.03)
+    cli.write_snp_links_csv(first, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
+    cli.write_snp_links_csv(second, _detailed([("c", "d", 7, 1200)]), threshold=0.03)
     merged = tmp_path / "merged.csv"
 
-    hcv_workflow.merge_link_tables([("1a", first), ("1b", second)], merged)
+    workflow.merge_link_tables([("1a", first), ("1b", second)], merged)
 
     lines = merged.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "source,target,distance,snp_count,comparable_sites"
@@ -252,11 +251,11 @@ def test_merge_link_tables_preserves_snp_columns(tmp_path: Path) -> None:
 
 def test_merge_link_tables_drops_snp_columns_when_not_in_every_input(tmp_path: Path) -> None:
     with_counts = tmp_path / "snp.csv"
-    hcv_cluster.write_snp_links_csv(with_counts, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
+    cli.write_snp_links_csv(with_counts, _detailed([("a", "b", 3, 1000)]), threshold=0.03)
     without_counts = tmp_path / "tn93.csv"
-    hcv_workflow.write_links(without_counts, [hcv_workflow.LinkRow("c", "d", 0.01)])
+    workflow.write_links(without_counts, [workflow.LinkRow("c", "d", 0.01)])
     merged = tmp_path / "merged.csv"
 
-    hcv_workflow.merge_link_tables([("1a", with_counts), ("1b", without_counts)], merged)
+    workflow.merge_link_tables([("1a", with_counts), ("1b", without_counts)], merged)
 
     assert merged.read_text(encoding="utf-8").splitlines()[0] == "source,target,distance"

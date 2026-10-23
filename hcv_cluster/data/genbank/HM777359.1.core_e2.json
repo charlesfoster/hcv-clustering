@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=261-833; e2=1410-2510",
+  "coordinate_source": "polyprotein_aa_boundary_transfer",
+  "core_e2_end": 2510,
+  "core_e2_length": 2250,
+  "core_e2_start": 261,
+  "genotype": "2j",
+  "reference_accession": "HM777359.1"
+}

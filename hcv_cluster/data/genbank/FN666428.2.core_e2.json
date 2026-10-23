@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=314-886; e2=1463-2563",
+  "coordinate_source": "genbank_feature_annotation",
+  "core_e2_end": 2563,
+  "core_e2_length": 2250,
+  "core_e2_start": 314,
+  "genotype": "2q",
+  "reference_accession": "FN666428.2"
+}

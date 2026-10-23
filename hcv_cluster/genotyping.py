@@ -1,0 +1,709 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import gzip
+import logging
+import shutil
+import subprocess
+import sys
+import tempfile
+from collections import OrderedDict, defaultdict
+from pathlib import Path
+
+from . import prep
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_PANEL = SCRIPT_DIR / "data" / "hcv_references.fasta"
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description=(
+            "Assign HCV genotype/subtype to each sequence in a FASTA by competitive "
+            "minimap2 alignment against an HCV reference panel."
+        )
+    )
+    parser.add_argument("-i", "--input", required=True, help="Input FASTA/FASTA.GZ containing sequences to assign")
+    parser.add_argument("-o", "--output-csv", required=True, help="Output CSV with one genotype assignment per sequence")
+    parser.add_argument(
+        "--outdir",
+        default=".",
+        help="Output directory used for optional per-genotype FASTA files and temporary output context",
+    )
+    parser.add_argument(
+        "--panel-fasta",
+        default=str(DEFAULT_PANEL),
+        help=f"Reference-panel FASTA. Default: {DEFAULT_PANEL}",
+    )
+    parser.add_argument("--minimap2", default="minimap2", help="minimap2 executable path/name")
+    parser.add_argument(
+        "--preset",
+        default="asm20",
+        help="minimap2 preset for query FASTA versus reference panel. Default: asm20",
+    )
+    parser.add_argument(
+        "--extra-minimap2-args",
+        default="",
+        help="Additional minimap2 arguments as a single shell-like string, e.g. '--secondary=no'",
+    )
+    parser.add_argument(
+        "--max-secondary",
+        type=int,
+        default=50,
+        help="Maximum secondary/reference-panel hits minimap2 may report per sequence. Default: 50",
+    )
+    parser.add_argument(
+        "--min-query-coverage",
+        type=float,
+        default=0.50,
+        help=(
+            "Minimum aligned fraction of callable (non-N) query bases required for a "
+            "pass assignment after combining compatible split alignments to the same "
+            "reference. Default: 0.50"
+        ),
+    )
+    parser.add_argument(
+        "--min-identity",
+        type=float,
+        default=0.75,
+        help=(
+            "Minimum minimap2 gap-compressed identity required for a pass assignment. "
+            "Falls back to conventional PAF block identity when the de tag is absent. "
+            "Default: 0.75"
+        ),
+    )
+    parser.add_argument(
+        "--close-hit-fraction",
+        type=float,
+        default=0.98,
+        help="Report non-winning references with alignment score at least this fraction of the winner. Default: 0.98",
+    )
+    parser.add_argument(
+        "--write-genotype-fastas",
+        action="store_true",
+        help="Write assigned sequences into per-genotype FASTA files such as hcv_1a.fasta",
+    )
+    parser.add_argument(
+        "--keep-paf",
+        action="store_true",
+        help="Keep the raw minimap2 PAF beside the output CSV for inspection",
+    )
+    return parser.parse_args(argv)
+
+
+def open_text(path):
+    path = str(path)
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", encoding="utf-8")
+    return open(path, "r", encoding="utf-8")
+
+
+def parse_fasta(path):
+    records = OrderedDict()
+    current_id = None
+    current_description = ""
+    chunks = []
+
+    with open_text(path) as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            if line.startswith(">"):
+                if current_id is not None:
+                    records[current_id] = {
+                        "description": current_description,
+                        "sequence": "".join(chunks),
+                    }
+                header = line[1:].strip()
+                if not header:
+                    raise ValueError(f"Blank FASTA header at line {line_number}: {path}")
+                current_id = header.split()[0]
+                if current_id in records:
+                    raise ValueError(f"Duplicate FASTA sequence ID '{current_id}' in {path}")
+                current_description = header
+                chunks = []
+            elif current_id is None:
+                raise ValueError(f"Sequence data found before first FASTA header at line {line_number}: {path}")
+            else:
+                chunks.append(line.strip())
+
+    if current_id is not None:
+        records[current_id] = {"description": current_description, "sequence": "".join(chunks)}
+
+    return records
+
+
+def normalize_records(records):
+    """Strip alignment-gap characters and non-IUPAC bases before minimap2 sees the
+    sequences, so pre-aligned/exported FASTA input doesn't inflate query_length and
+    tank query_coverage. Mirrors prep.normalize_input_record."""
+    logger = logging.getLogger(__name__)
+    normalized = OrderedDict()
+    for query_id, record in records.items():
+        fasta_record = prep.FastaRecord(header=query_id, sequence=record["sequence"])
+        try:
+            sequence = prep.normalize_input_record(fasta_record, logger).sequence
+        except prep.HcvPrepError:
+            # Empty after stripping gaps/whitespace; leave blank so it falls through
+            # to the existing "no_alignment" qc_fail path instead of crashing the batch.
+            sequence = ""
+        normalized[query_id] = {"description": record["description"], "sequence": sequence}
+    return normalized
+
+
+def parse_reference_ids(path):
+    reference_ids = []
+    with open_text(path) as handle:
+        for line in handle:
+            if line.startswith(">"):
+                reference_ids.append(line[1:].strip().split()[0])
+    return reference_ids
+
+
+def extract_genotype(reference_id):
+    parts = reference_id.split("_")
+    if not parts or not parts[0]:
+        raise ValueError(f"Unable to parse genotype/subtype from reference ID: {reference_id}")
+    return parts[0]
+
+
+def genotype_group(genotype):
+    return "".join(char for char in genotype if char.isdigit())
+
+
+def shell_split(value):
+    if not value:
+        return []
+    import shlex
+
+    return shlex.split(value)
+
+
+def run_minimap2(args, query_fasta_path, paf_path):
+    executable = shutil.which(args.minimap2) if not Path(args.minimap2).exists() else args.minimap2
+    if executable is None:
+        raise RuntimeError(
+            f"Could not find minimap2 executable '{args.minimap2}'. Install minimap2 or pass --minimap2 /path/to/minimap2."
+        )
+
+    command = [
+        str(executable),
+        "-x",
+        args.preset,
+        "-c",
+        "-N",
+        str(args.max_secondary),
+        *shell_split(args.extra_minimap2_args),
+        str(args.panel_fasta),
+        str(query_fasta_path),
+    ]
+    with open(paf_path, "w", encoding="utf-8") as paf_handle:
+        completed = subprocess.run(command, stdout=paf_handle, stderr=subprocess.PIPE, text=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "minimap2 failed with exit code "
+            f"{completed.returncode}: {completed.stderr.strip() or 'no stderr captured'}"
+        )
+
+
+def parse_optional_tags(fields):
+    tags = {}
+    for field in fields:
+        parts = field.split(":", 2)
+        if len(parts) == 3:
+            tags[parts[0]] = parts[2]
+    return tags
+
+
+def parse_paf(path):
+    hits_by_query = defaultdict(list)
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 12:
+                raise ValueError(f"PAF line {line_number} has fewer than 12 fields: {path}")
+
+            tags = parse_optional_tags(fields[12:])
+            query_id = fields[0]
+            query_length = int(fields[1])
+            query_start = int(fields[2])
+            query_end = int(fields[3])
+            strand = fields[4]
+            target_id = fields[5]
+            target_length = int(fields[6])
+            target_start = int(fields[7])
+            target_end = int(fields[8])
+            matching_bases = int(fields[9])
+            alignment_block_length = int(fields[10])
+            mapq = int(fields[11])
+            alignment_score = int(tags.get("AS", matching_bases))
+            primary = tags.get("tp", "P") != "S"
+
+            query_aligned_bases = query_end - query_start
+            target_aligned_bases = target_end - target_start
+            identity = matching_bases / alignment_block_length if alignment_block_length else 0.0
+            divergence_tag = tags.get("de")
+            if divergence_tag is None:
+                gap_compressed_identity = identity
+                identity_method = "block"
+            else:
+                gap_compressed_identity = max(0.0, min(1.0, 1.0 - float(divergence_tag)))
+                identity_method = "gap_compressed"
+            query_coverage = query_aligned_bases / query_length if query_length else 0.0
+            target_coverage = target_aligned_bases / target_length if target_length else 0.0
+
+            hits_by_query[query_id].append(
+                {
+                    "query_id": query_id,
+                    "query_length": query_length,
+                    "query_start": query_start,
+                    "query_end": query_end,
+                    "strand": strand,
+                    "target_id": target_id,
+                    "target_length": target_length,
+                    "target_start": target_start,
+                    "target_end": target_end,
+                    "query_aligned_bases": query_aligned_bases,
+                    "target_aligned_bases": target_aligned_bases,
+                    "matching_bases": matching_bases,
+                    "alignment_block_length": alignment_block_length,
+                    "alignment_score": alignment_score,
+                    "mapq": mapq,
+                    "identity": identity,
+                    "gap_compressed_identity": gap_compressed_identity,
+                    "identity_method": identity_method,
+                    "query_coverage": query_coverage,
+                    "query_intervals": ((query_start, query_end),),
+                    "target_coverage": target_coverage,
+                    "primary": primary,
+                }
+            )
+    return hits_by_query
+
+
+def segments_are_collinear(left, right):
+    """Return whether two PAF segments can represent one split alignment.
+
+    Segments must be non-overlapping on both query and target, retain the same
+    orientation, and leave approximately the same-sized gap on both sequences.
+    The gap concordance guard permits ordinary small indels while rejecting
+    rearranged or obviously chimeric chains. Long runs of N naturally satisfy
+    this rule because they occupy the missing span in the query coordinates.
+    """
+    if left["target_id"] != right["target_id"] or left["strand"] != right["strand"]:
+        return False
+    if left["query_end"] > right["query_start"]:
+        return False
+
+    query_gap = right["query_start"] - left["query_end"]
+    if left["strand"] == "+":
+        if left["target_end"] > right["target_start"]:
+            return False
+        target_gap = right["target_start"] - left["target_end"]
+    else:
+        if right["target_end"] > left["target_start"]:
+            return False
+        target_gap = left["target_start"] - right["target_end"]
+
+    allowed_difference = max(50, int(0.10 * max(query_gap, target_gap, 1)))
+    return abs(query_gap - target_gap) <= allowed_difference
+
+
+def _chain_rank(chain):
+    """Prefer well-supported chains while retaining coverage as a tie-breaker."""
+    return (
+        any(hit["primary"] for hit in chain),
+        sum(hit["alignment_score"] for hit in chain),
+        sum(hit["matching_bases"] for hit in chain),
+        sum(hit["query_aligned_bases"] for hit in chain),
+        -len(chain),
+    )
+
+
+def best_collinear_chain(segments):
+    """Find the strongest compatible split-alignment chain for one target/strand."""
+    ordered = sorted(
+        segments,
+        key=lambda hit: (
+            hit["query_start"],
+            hit["query_end"],
+            hit["target_start"],
+            hit["target_end"],
+        ),
+    )
+    if not ordered:
+        return []
+
+    best_ending_at = [[hit] for hit in ordered]
+    for current_index, current in enumerate(ordered):
+        for previous_index in range(current_index):
+            previous_chain = best_ending_at[previous_index]
+            if not segments_are_collinear(previous_chain[-1], current):
+                continue
+            candidate = [*previous_chain, current]
+            if _chain_rank(candidate) > _chain_rank(best_ending_at[current_index]):
+                best_ending_at[current_index] = candidate
+    return max(best_ending_at, key=_chain_rank)
+
+
+def aggregate_hit_chain(chain):
+    """Collapse a compatible PAF chain into the metrics used for assignment QC."""
+    first = chain[0]
+    query_aligned_bases = sum(hit["query_aligned_bases"] for hit in chain)
+    target_aligned_bases = sum(hit["target_aligned_bases"] for hit in chain)
+    matching_bases = sum(hit["matching_bases"] for hit in chain)
+    alignment_block_length = sum(hit["alignment_block_length"] for hit in chain)
+    alignment_score = sum(hit["alignment_score"] for hit in chain)
+    gap_compressed_identity = (
+        sum(
+            hit["gap_compressed_identity"] * hit["alignment_block_length"]
+            for hit in chain
+        )
+        / alignment_block_length
+        if alignment_block_length
+        else 0.0
+    )
+    identity_method = (
+        "gap_compressed"
+        if all(hit["identity_method"] == "gap_compressed" for hit in chain)
+        else "block_fallback"
+    )
+    return {
+        "query_id": first["query_id"],
+        "query_length": first["query_length"],
+        "query_start": min(hit["query_start"] for hit in chain),
+        "query_end": max(hit["query_end"] for hit in chain),
+        "strand": first["strand"],
+        "target_id": first["target_id"],
+        "target_length": first["target_length"],
+        "target_start": min(hit["target_start"] for hit in chain),
+        "target_end": max(hit["target_end"] for hit in chain),
+        "query_aligned_bases": query_aligned_bases,
+        "target_aligned_bases": target_aligned_bases,
+        "matching_bases": matching_bases,
+        "alignment_block_length": alignment_block_length,
+        "alignment_score": alignment_score,
+        "mapq": min(hit["mapq"] for hit in chain),
+        "identity": matching_bases / alignment_block_length if alignment_block_length else 0.0,
+        "gap_compressed_identity": gap_compressed_identity,
+        "identity_method": identity_method,
+        "query_coverage": query_aligned_bases / first["query_length"] if first["query_length"] else 0.0,
+        "query_intervals": tuple(
+            (hit["query_start"], hit["query_end"])
+            for hit in sorted(chain, key=lambda item: (item["query_start"], item["query_end"]))
+        ),
+        "target_coverage": target_aligned_bases / first["target_length"] if first["target_length"] else 0.0,
+        "primary": any(hit["primary"] for hit in chain),
+        "alignment_segment_count": len(chain),
+    }
+
+
+def aggregate_split_hits(hits):
+    """Combine compatible split mappings and return one best chain per reference."""
+    by_target_and_strand = defaultdict(list)
+    for hit in hits:
+        by_target_and_strand[(hit["target_id"], hit["strand"])].append(hit)
+
+    candidates_by_target = defaultdict(list)
+    for (target_id, _strand), segments in by_target_and_strand.items():
+        chain = best_collinear_chain(segments)
+        if chain:
+            candidates_by_target[target_id].append(aggregate_hit_chain(chain))
+
+    aggregated = []
+    for candidates in candidates_by_target.values():
+        aggregated.append(sort_hits(candidates)[0])
+    return aggregated
+
+
+def sort_hits(hits):
+    return sorted(
+        hits,
+        key=lambda hit: (
+            not hit["primary"],
+            -hit["alignment_score"],
+            -hit["matching_bases"],
+            -hit["query_aligned_bases"],
+            -hit["identity"],
+            -hit["mapq"],
+            hit["target_id"],
+        ),
+    )
+
+
+def fmt_float(value):
+    return f"{value:.6f}"
+
+
+def callable_query_coverage(hit, sequence):
+    """Return the fraction of non-N query bases covered by a hit's intervals."""
+    callable_bases = sum(base.upper() != "N" for base in sequence)
+    if not callable_bases:
+        return 0.0
+
+    covered_callable_bases = 0
+    previous_end = 0
+    for start, end in sorted(hit["query_intervals"]):
+        # Chained hits are non-overlapping, but merging here also makes this
+        # robust to externally constructed/test hit dictionaries.
+        start = max(start, previous_end)
+        if end > start:
+            covered_callable_bases += sum(base.upper() != "N" for base in sequence[start:end])
+            previous_end = end
+    return covered_callable_bases / callable_bases
+
+
+def add_qc_metrics(hit, sequence):
+    """Attach the coverage and identity definitions actually used for QC."""
+    return {
+        **hit,
+        "span_query_coverage": hit["query_coverage"],
+        "block_identity": hit["identity"],
+        "query_coverage": callable_query_coverage(hit, sequence),
+        "identity": hit["gap_compressed_identity"],
+    }
+
+
+def select_coverage_hit(hits, genotype, args):
+    """Choose the reference hit used for genotype-assignment QC.
+
+    Genotype assignment remains based on the strongest alignment score across the
+    panel.  Once that genotype has won, coverage QC may use a different reference
+    of the same genotype: first prefer hits that satisfy both QC thresholds, then
+    choose the one covering the greatest fraction of the query.  This prevents a
+    high-completion sequence from failing solely because the score-winning
+    reference aligns strongly to a shorter portion of it.
+    """
+    genotype_hits = [hit for hit in hits if extract_genotype(hit["target_id"]) == genotype]
+    passing_hits = [
+        hit
+        for hit in genotype_hits
+        if hit["query_coverage"] >= args.min_query_coverage
+        and hit["identity"] >= args.min_identity
+    ]
+    candidates = passing_hits or genotype_hits
+    return max(
+        candidates,
+        key=lambda hit: (
+            hit["query_coverage"],
+            hit["alignment_score"],
+            hit["identity"],
+            hit["matching_bases"],
+            hit["mapq"],
+            hit["target_id"],
+        ),
+    )
+
+
+def build_assignment_rows(records, hits_by_query, args):
+    rows = []
+    for query_id, record in records.items():
+        sequence_length = len(record["sequence"])
+        non_n_bases = sum(base.upper() != "N" for base in record["sequence"])
+        non_n_fraction = non_n_bases / sequence_length if sequence_length else 0.0
+        hits = [
+            add_qc_metrics(hit, record["sequence"])
+            for hit in sort_hits(aggregate_split_hits(hits_by_query.get(query_id, [])))
+        ]
+        if not hits:
+            rows.append(
+                {
+                    "sequence_id": query_id,
+                    "assigned_genotype": "",
+                    "genotype_group": "",
+                    "assignment_status": "qc_fail",
+                    "qc_fail_reason": "no_alignment",
+                    "best_ref": "",
+                    "best_ref_genotype": "",
+                    "coverage_ref": "",
+                    "query_length": sequence_length,
+                    "non_n_bases": non_n_bases,
+                    "non_n_fraction": fmt_float(non_n_fraction),
+                    "best_alignment_score": 0,
+                    "second_alignment_score": "",
+                    "score_margin": "",
+                    "score_margin_fraction": "",
+                    "query_coverage": "",
+                    "query_span_coverage": "",
+                    "target_coverage": "",
+                    "identity": "",
+                    "identity_method": "",
+                    "block_identity": "",
+                    "mapq": "",
+                    "matching_bases": 0,
+                    "alignment_block_length": 0,
+                    "alignment_segment_count": 0,
+                    "close_hits": "",
+                    "other_potential_genotypes": "",
+                }
+            )
+            continue
+
+        best = hits[0]
+        best_genotype = extract_genotype(best["target_id"])
+        coverage_hit = select_coverage_hit(hits, best_genotype, args)
+        second_score = hits[1]["alignment_score"] if len(hits) > 1 else None
+        score_margin = best["alignment_score"] - second_score if second_score is not None else None
+        score_margin_fraction = score_margin / best["alignment_score"] if score_margin is not None and best["alignment_score"] else None
+        close_score = best["alignment_score"] * args.close_hit_fraction
+        close_hits = [hit for hit in hits[1:] if hit["alignment_score"] >= close_score]
+        other_genotypes = [
+            extract_genotype(hit["target_id"])
+            for hit in close_hits
+            if extract_genotype(hit["target_id"]) != best_genotype
+        ]
+
+        fail_reasons = []
+        if coverage_hit["query_coverage"] < args.min_query_coverage:
+            fail_reasons.append("low_query_coverage")
+        if coverage_hit["identity"] < args.min_identity:
+            fail_reasons.append("low_identity")
+
+        rows.append(
+            {
+                "sequence_id": query_id,
+                "assigned_genotype": "" if fail_reasons else best_genotype,
+                "genotype_group": "" if fail_reasons else genotype_group(best_genotype),
+                "assignment_status": "qc_fail" if fail_reasons else "pass",
+                "qc_fail_reason": ";".join(fail_reasons),
+                "best_ref": best["target_id"],
+                "best_ref_genotype": best_genotype,
+                "coverage_ref": coverage_hit["target_id"],
+                "query_length": best["query_length"],
+                "non_n_bases": non_n_bases,
+                "non_n_fraction": fmt_float(non_n_fraction),
+                "best_alignment_score": best["alignment_score"],
+                "second_alignment_score": "" if second_score is None else second_score,
+                "score_margin": "" if score_margin is None else score_margin,
+                "score_margin_fraction": "" if score_margin_fraction is None else fmt_float(score_margin_fraction),
+                "query_coverage": fmt_float(coverage_hit["query_coverage"]),
+                "query_span_coverage": fmt_float(coverage_hit["span_query_coverage"]),
+                "target_coverage": fmt_float(coverage_hit["target_coverage"]),
+                "identity": fmt_float(coverage_hit["identity"]),
+                "identity_method": coverage_hit["identity_method"],
+                "block_identity": fmt_float(coverage_hit["block_identity"]),
+                "mapq": coverage_hit["mapq"],
+                "matching_bases": coverage_hit["matching_bases"],
+                "alignment_block_length": coverage_hit["alignment_block_length"],
+                "alignment_segment_count": coverage_hit["alignment_segment_count"],
+                "close_hits": ";".join(hit["target_id"] for hit in close_hits),
+                "other_potential_genotypes": ";".join(dict.fromkeys(other_genotypes)),
+            }
+        )
+    return rows
+
+
+def write_csv(path, rows):
+    columns = [
+        "sequence_id",
+        "assigned_genotype",
+        "genotype_group",
+        "assignment_status",
+        "qc_fail_reason",
+        "best_ref",
+        "best_ref_genotype",
+        "coverage_ref",
+        "query_length",
+        "non_n_bases",
+        "non_n_fraction",
+        "best_alignment_score",
+        "second_alignment_score",
+        "score_margin",
+        "score_margin_fraction",
+        "query_coverage",
+        "query_span_coverage",
+        "target_coverage",
+        "identity",
+        "identity_method",
+        "block_identity",
+        "mapq",
+        "matching_bases",
+        "alignment_block_length",
+        "alignment_segment_count",
+        "close_hits",
+        "other_potential_genotypes",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def fasta_wrap(sequence, width=80):
+    for index in range(0, len(sequence), width):
+        yield sequence[index : index + width]
+
+
+def write_records_fasta(path, records):
+    with open(path, "w", encoding="utf-8") as handle:
+        for record in records.values():
+            handle.write(f">{record['description']}\n")
+            for line in fasta_wrap(record["sequence"]):
+                handle.write(f"{line}\n")
+
+
+def write_genotype_fastas(outdir, records, rows):
+    by_genotype = defaultdict(list)
+    for row in rows:
+        genotype = row["assigned_genotype"]
+        if genotype:
+            by_genotype[genotype].append(row["sequence_id"])
+
+    for genotype, sequence_ids in sorted(by_genotype.items()):
+        output_path = outdir / f"hcv_{genotype}.fasta"
+        with open(output_path, "w", encoding="utf-8") as handle:
+            for sequence_id in sequence_ids:
+                record = records[sequence_id]
+                handle.write(f">{record['description']}\n")
+                for line in fasta_wrap(record["sequence"]):
+                    handle.write(f"{line}\n")
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    args.input = Path(args.input)
+    args.output_csv = Path(args.output_csv)
+    args.outdir = Path(args.outdir)
+    args.panel_fasta = Path(args.panel_fasta)
+
+    if not args.input.exists():
+        raise ValueError(f"Input FASTA does not exist: {args.input}")
+    if not args.panel_fasta.exists():
+        raise ValueError(f"Reference-panel FASTA does not exist: {args.panel_fasta}")
+    if not 0.0 <= args.close_hit_fraction <= 1.0:
+        raise ValueError("--close-hit-fraction must be between 0 and 1")
+
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    args.output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    records = parse_fasta(args.input)
+    if not records:
+        raise ValueError(f"Input FASTA contains no sequences: {args.input}")
+    records = normalize_records(records)
+    if not parse_reference_ids(args.panel_fasta):
+        raise ValueError(f"Reference-panel FASTA contains no sequences: {args.panel_fasta}")
+
+    keep_paf_path = args.output_csv.with_suffix(".paf")
+    with tempfile.TemporaryDirectory(prefix="hcv_genotype_", dir=args.outdir) as tmpdir:
+        query_fasta_path = Path(tmpdir) / "normalized_query.fasta"
+        write_records_fasta(query_fasta_path, records)
+        paf_path = keep_paf_path if args.keep_paf else Path(tmpdir) / "competitive.paf"
+        run_minimap2(args, query_fasta_path, paf_path)
+        hits_by_query = parse_paf(paf_path)
+
+    rows = build_assignment_rows(records, hits_by_query, args)
+    write_csv(args.output_csv, rows)
+    if args.write_genotype_fastas:
+        write_genotype_fastas(args.outdir, records, rows)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)

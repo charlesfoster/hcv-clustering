@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=191-763; e2=1340-2428",
+  "coordinate_source": "genbank_feature_annotation",
+  "core_e2_end": 2428,
+  "core_e2_length": 2238,
+  "core_e2_start": 191,
+  "genotype": "4w",
+  "reference_accession": "FJ025855.1"
+}

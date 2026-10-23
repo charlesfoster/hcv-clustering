@@ -3,13 +3,17 @@ authors = ["charlesfoster <charles.foster@unsw.edu.au>"]
 channels = ["conda-forge", "bioconda"]
 name = "clustering_workflow"
 platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
-version = "0.1.0"
+version = "0.2.0"
 
 [tasks]
-hcv-cluster = "python hcv_cluster.py"
-hcv-cluster-gui = "streamlit run hcv_cluster_gui.py"
-hcv-workflow = "python hcv_workflow.py"
+hcv-cluster = "python -m hcv_cluster"
+hcv-stage = "python -m hcv_cluster.stages"
+hcv-cluster-gui = "streamlit run streamlit_app.py"
+hcv-workflow = "python -m hcv_cluster.workflow"
 test = "pytest"
+
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT"
 
 [dependencies]
 python = ">=3.11"
@@ -22,3 +26,35 @@ streamlit = ">=1.32"
 networkx = ">=3.2"
 plotly = ">=5.20"
 python-kaleido = ">=1.3.0,<2"
+
+# Environments
+#   default   everything for local development, tests and the GUI
+#   nf        default + Nextflow, for `pixi run -e nf nextflow run main.nf ...`
+#   pipeline  only what the pipeline stages need; this is what the container installs
+#
+# The scientific tools are pinned in the shared "core" feature, so development, the
+# Nextflow workflow and the container all run exactly the same versions. Bump them
+# deliberately (and re-check results), not as a side effect of re-locking.
+[feature.core.dependencies]
+python = "3.14.*"
+biopython = "1.88.*"
+mafft = "7.526.*"
+minimap2 = "2.31.*"
+tn93 = "1.1.*"
+
+# Network plots (HTML works anywhere; PNG/SVG additionally need a local Chrome).
+[feature.viz.dependencies]
+networkx = ">=3.2"
+plotly = ">=5.20"
+python-kaleido = ">=1.3.0,<2"
+
+[feature.nextflow.dependencies]
+nextflow = ">=24.04"
+
+[feature.nextflow.tasks]
+hcv-nextflow = "nextflow run main.nf"
+
+[environments]
+default = { features = ["core"], solve-group = "main" }
+nf = { features = ["core", "nextflow"], solve-group = "main" }
+pipeline = { features = ["core", "viz"], no-default-feature = true, solve-group = "main" }

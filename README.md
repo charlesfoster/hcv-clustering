@@ -50,15 +50,9 @@ Every command below is run from inside the `hcv-clustering` directory.
 
 ## Quick start
 
-### Step 1 — Cache reference sequences (first run only)
+### Step 1 — Reference sequences (nothing to do)
 
-Download and cache the genotype-specific reference GenBank records used for alignment coordinate extraction:
-
-```bash
-pixi run hcv-cluster refs
-```
-
-References are downloaded from NCBI and stored in `refs/`. This step only needs to be repeated if you add a new genotype via `--reference-map` or want to force a re-download with `--force-download`.
+The GenBank reference records used for alignment coordinates ship with the repository (`hcv_cluster/data/genbank`), so the first run needs no network access. `pixi run hcv-cluster refs` is only needed if you add a subtype with `--reference-map` and want to download it ahead of time, or force a re-download with `--force-download`.
 
 ### Step 2 — Run the clustering pipeline
 
@@ -222,6 +216,16 @@ pixi run hcv-cluster run -i samples.fasta \
 
 Each small-multiple panel has identical node positions, so topology can be compared directly while colour carries only one meaning per panel. Small multiples cannot be combined with composite node-encoding flags. `--plot-node-spacing` accepts `compact`, `normal` (default), or `expanded`; it applies deterministic collision removal before components are packed.
 
+### Cluster sizes by patient
+
+Several sequences from one person (a re-test, a serial sample) are not evidence of transmission. If your metadata has a column identifying the person, name it with `--patient-column`:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-column patient_id
+```
+
+`cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences`, `cluster_samples` and `cluster_patients` as well, with or without this option. `--sample-column` names a column identifying the physical sample (one patient can give several), so that `cluster_samples` counts distinct samples. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
+
 ### GUI
 
 A Streamlit GUI wraps the same pipeline for users who prefer not to use the command line:
@@ -241,6 +245,41 @@ The displayed metadata can then be changed repeatedly without rerunning clusteri
 The **Node spacing** selector offers compact, normal, and expanded collision-aware layouts. Positions are cached for the selected graph, layout, singleton setting, and spacing, so changing metadata does not make nodes jump around. Sample ID and cluster details always remain in hover. High-cardinality encodings produce readability warnings rather than silently changing the data.
 
 Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a multi-member cluster. **Show cluster ID labels** adds one text label beside each multi-member cluster (rather than one per node); singleton IDs are omitted to avoid clutter. These labels are retained as editable text in SVG exports and are repeated in each small-multiple panel. **Save image (PNG)** downloads a raster copy, while **Save editable vector (SVG)** downloads an Illustrator-editable vector containing paths and text rather than a flattened bitmap. Plotly's SVG grouping is preserved, although it is not a hand-authored Illustrator layer hierarchy. Sample names remain hover-only and are therefore not printed as labels in either static format. Use the **Exit** button in the sidebar to shut the server down cleanly from the browser instead of returning to the terminal.
+
+---
+
+## Running with Nextflow
+
+The same pipeline runs as a Nextflow workflow, for servers, HPC clusters, or embedding in a larger pipeline. Nextflow only wires files together: every scientific decision (thresholds, regions, supported subtypes, sample bookkeeping) is made by the same Python code that `hcv-cluster run` uses, so the two give identical tables. `tests/test_nextflow_parity.py` checks this (`pixi run -e nf test`).
+
+```bash
+# Local, tools from the pixi environment
+pixi run -e nf nextflow run main.nf --input samples.fasta --outdir results
+
+# In a container built from pixi.lock (identical tool versions)
+docker build -t hcv-cluster .
+nextflow run main.nf -profile docker --input samples.fasta --outdir results
+
+# Quick check that an installation works (uses a small synthetic data set)
+nextflow run main.nf -profile test,docker --outdir test_results
+```
+
+Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed, and `--reuse_alignments <previous outdir>` to re-align only new or changed sequences (the same behaviour as `--reuse-alignments` on the CLI). Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
+
+Network plots use the same options as the CLI with underscores: `--plot_network html --plot_scope both --plot_color_by location`, where the colour field is a column of your `--metadata` CSV. Interactive HTML works everywhere, including the container; PNG and SVG additionally need a local Chrome, which the container does not include, so they are skipped there with a warning.
+
+To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
+
+```groovy
+include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
+HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
+```
+
+The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv_cluster.stages <stage>`) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
+
+**Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
+
+**Environments.** `pixi.toml` pins the scientific tools once, in the `core` feature, and three environments share that pin: `default` (development, tests, GUI), `nf` (adds Nextflow) and `pipeline` (only what the container installs). Bump tool versions deliberately, then re-check results; do not let re-locking move them. TN93 1.1 adds exact speed-ups for large data sets that give identical links to the default mode (checked on 3,000 sequences); enable them with `--extra-tn93-args "-S"` (or `--extra_tn93_args '-S'` in Nextflow).
 
 ---
 
@@ -464,8 +503,25 @@ pixi run hcv-workflow cluster \
 
 ---
 
+## Code layout
+
+```
+hcv_cluster/            the Python package (also pip-installable: pyproject.toml)
+  cli.py                hcv-cluster run / refs         (python -m hcv_cluster)
+  stages.py             file-in/file-out stages shared by the CLI and Nextflow
+  genotyping.py         minimap2 subtype assignment
+  prep.py               MAFFT alignment and region extraction
+  methods.py            region thresholds, SNP distance
+  plotting.py           network plots (CLI flags and the plot stage)
+  variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py
+  data/                 genotype panel, ICTV table, bundled GenBank references
+streamlit_app.py        GUI entry point
+main.nf workflows/ modules/ nextflow.config Dockerfile    the Nextflow workflow
+```
+
 ## Tests
 
 ```bash
-pixi run test
+pixi run test            # unit and stage-chain tests
+pixi run -e nf test      # also runs the CLI-vs-Nextflow parity test
 ```

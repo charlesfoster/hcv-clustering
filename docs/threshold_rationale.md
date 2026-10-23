@@ -25,7 +25,7 @@ This pipeline's "SNP distance" (`hcv_cluster.compute_snp_distances_detailed`) is
 the fraction of ACGT-comparable aligned sites that differ. That is *exactly* the metric Lamoury et al. 2015
 used (MEGA v6 p-distance, partial deletion at 95% site coverage) — not an approximation of it.
 
-So the two `REGION_THRESHOLDS_*` tables in `hcv_cluster.py` are populated from the same literature values,
+So the two `REGION_THRESHOLDS_*` tables in `hcv_cluster/methods.py` are populated from the same literature values,
 but the citation is doing different work in each:
 
 | Region | TN93 default | Its real evidence | SNP default | Its real evidence |
@@ -46,7 +46,7 @@ counting ACGT-comparable sites for each specific pair, independent of the rest o
 minor methodological difference in how missing data is handled, not in the core p-distance calculation
 itself, and does not undermine reusing their threshold values.
 
-`resolve_threshold(region, user_threshold, distance="tn93" | "snp")` in `hcv_cluster.py` looks up the
+`resolve_threshold(region, user_threshold, distance="tn93" | "snp")` in `hcv_cluster/methods.py` looks up the
 metric-appropriate table; `--threshold` (CLI/GUI) still overrides either one explicitly, per run.
 
 ---

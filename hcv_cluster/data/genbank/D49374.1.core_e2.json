@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=340-912; e2=1492-2601",
+  "coordinate_source": "genbank_feature_annotation+genbank_feature_annotation_corrected",
+  "core_e2_end": 2601,
+  "core_e2_length": 2262,
+  "core_e2_start": 340,
+  "genotype": "3b",
+  "reference_accession": "D49374.1"
+}

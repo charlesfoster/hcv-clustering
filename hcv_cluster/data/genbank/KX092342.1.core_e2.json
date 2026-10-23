@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=343-915; e2=1498-2592",
+  "coordinate_source": "genbank_feature_annotation",
+  "core_e2_end": 2592,
+  "core_e2_length": 2250,
+  "core_e2_start": 343,
+  "genotype": "7b",
+  "reference_accession": "KX092342.1"
+}

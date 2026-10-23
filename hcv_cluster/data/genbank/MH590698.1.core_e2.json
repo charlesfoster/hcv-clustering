@@ -1,0 +1,9 @@
+{
+  "coordinate_detail": "core=340-912; e2=1489-2589",
+  "coordinate_source": "polyprotein_aa_boundary_transfer",
+  "core_e2_end": 2589,
+  "core_e2_length": 2250,
+  "core_e2_start": 340,
+  "genotype": "8a",
+  "reference_accession": "MH590698.1"
+}

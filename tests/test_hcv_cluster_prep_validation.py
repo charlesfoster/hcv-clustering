@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hcv_cluster_prep as prep
-from hcv_cluster_prep import FastaRecord
+from hcv_cluster import prep
+from hcv_cluster.prep import FastaRecord
 
 LOG = logging.getLogger("test")
 

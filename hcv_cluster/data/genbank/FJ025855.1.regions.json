@@ -1,0 +1,83 @@
+{
+  "genotype": "4w",
+  "reference_accession": "FJ025855.1",
+  "regions": {
+    "cds": {
+      "detail": "CDS:polyprotein:191-9226",
+      "end": 9226,
+      "length": 9036,
+      "source": "polyprotein_cds_feature",
+      "start": 191
+    },
+    "core": {
+      "detail": "mat_peptide:core:191-763",
+      "end": 763,
+      "length": 573,
+      "source": "genbank_feature_annotation",
+      "start": 191
+    },
+    "e1": {
+      "detail": "mat_peptide:E1:764-1339",
+      "end": 1339,
+      "length": 576,
+      "source": "genbank_feature_annotation",
+      "start": 764
+    },
+    "e2": {
+      "detail": "mat_peptide:E2:1340-2428",
+      "end": 2428,
+      "length": 1089,
+      "source": "genbank_feature_annotation",
+      "start": 1340
+    },
+    "ns2": {
+      "detail": "mat_peptide:NS2:2618-3268",
+      "end": 3268,
+      "length": 651,
+      "source": "genbank_feature_annotation",
+      "start": 2618
+    },
+    "ns3": {
+      "detail": "mat_peptide:NS3:3269-5161",
+      "end": 5161,
+      "length": 1893,
+      "source": "genbank_feature_annotation",
+      "start": 3269
+    },
+    "ns4a": {
+      "detail": "mat_peptide:NS4A:5162-5323",
+      "end": 5323,
+      "length": 162,
+      "source": "genbank_feature_annotation",
+      "start": 5162
+    },
+    "ns4b": {
+      "detail": "mat_peptide:NS4B:5324-6106",
+      "end": 6106,
+      "length": 783,
+      "source": "genbank_feature_annotation",
+      "start": 5324
+    },
+    "ns5a": {
+      "detail": "mat_peptide:NS5A:6107-7450",
+      "end": 7450,
+      "length": 1344,
+      "source": "genbank_feature_annotation",
+      "start": 6107
+    },
+    "ns5b": {
+      "detail": "mat_peptide:NS5B:7451-9223",
+      "end": 9223,
+      "length": 1773,
+      "source": "genbank_feature_annotation",
+      "start": 7451
+    },
+    "p7": {
+      "detail": "mat_peptide:p7:2429-2617",
+      "end": 2617,
+      "length": 189,
+      "source": "genbank_feature_annotation",
+      "start": 2429
+    }
+  }
+}

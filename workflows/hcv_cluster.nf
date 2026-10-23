@@ -52,7 +52,7 @@ workflow HCV_CLUSTER {
 
     primary = MERGE.out.clusters.filter { method, f -> method == methods[0] }
     if (params.registry) {
-        registry = Channel.value(file(params.registry).exists() ? file(params.registry) : file("${projectDir}/assets/NO_REGISTRY"))
+        registry = Channel.value(file(params.registry).exists() ? file(params.registry) : moduleDir.resolve("../assets/NO_REGISTRY"))
         LABEL(primary, registry)
         final_clusters = LABEL.out.clusters.map { m, f -> f }
     } else {

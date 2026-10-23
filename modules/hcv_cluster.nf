@@ -5,8 +5,9 @@
 // prep, genotyping), the same code that
 // `hcv-cluster run` uses, so the two ways of running cannot drift apart.
 
-// The package is run from params.code_dir (the repository, or /opt/hcv-cluster in the container).
-def py(module) { "PYTHONPATH=${params.code_dir} python -m hcv_cluster.${module}" }
+// The package is run from params.code_dir, by default the repository this module sits in
+// (wherever it was included from); a container profile points it at the code in the image.
+def py(module) { "PYTHONPATH=${params.code_dir ?: moduleDir.resolve('..')} python -m hcv_cluster.${module}" }
 def stage(name) { "${py('stages')} ${name}" }
 // Cluster sizes count patients when metadata columns identifying them are configured.
 def patientArgs(metadata) {

@@ -121,11 +121,12 @@ def test_clusters_are_sized_by_patients_and_one_patient_earns_no_label(tmp_path:
         "s1,1a,1a_C0001,C0001,2\ns2,1a,1a_C0001,C0001,2\n"
         "s3,1a,1a_C0002,C0002,2\ns4,1a,1a_C0002,C0002,2\n"
     )
-    metadata = [{"sample_id": s, "patient": p} for s, p in
+    metadata = [{"sample_id": s, "patient": p, "specimen": f"spec_{s}"} for s, p in
                 (("s1", "p1"), ("s2", "p1"), ("s3", "p2"), ("s4", "p3"))]
-    stages.annotate_clusters(clusters, None, metadata, "patient")
+    stages.annotate_clusters(clusters, None, metadata, "patient", "specimen")
     rows = {r["sample_id"]: r for r in _rows(clusters)}
     assert (rows["s1"]["cluster_size"], rows["s1"]["cluster_sequences"], rows["s1"]["cluster_patients"]) == ("1", "2", "1")
+    assert rows["s1"]["cluster_samples"] == "2"  # two specimens, one patient
     assert (rows["s3"]["cluster_size"], rows["s3"]["cluster_sequences"], rows["s3"]["cluster_patients"]) == ("2", "2", "2")
 
     stages.label_clusters(

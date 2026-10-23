@@ -8,9 +8,10 @@
 // The package is run from params.code_dir (the repository, or /opt/hcv-cluster in the container).
 def py(module) { "PYTHONPATH=${params.code_dir} python -m hcv_cluster.${module}" }
 def stage(name) { "${py('stages')} ${name}" }
-// Cluster sizes count patients when a metadata column identifying them is configured.
+// Cluster sizes count patients when metadata columns identifying them are configured.
 def patientArgs(metadata) {
-    params.patient_column && metadata.name != "NO_FILE" ? "--metadata ${metadata} --patient-column ${params.patient_column}" : ""
+    if (metadata.name == "NO_FILE" || !(params.patient_column || params.sample_column)) return ""
+    "--metadata ${metadata} ${optionally('--patient-column', params.patient_column)} ${optionally('--sample-column', params.sample_column)}"
 }
 def optionally(flag, value) { value != null && value != "" ? "${flag} ${value}" : "" }
 

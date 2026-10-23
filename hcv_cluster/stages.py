@@ -210,11 +210,12 @@ def merge_tables(
     variants_csv: Path | None = None,
     metadata_rows: Sequence[Mapping[str, Any]] = (),
     patient_column: str | None = None,
+    sample_column: str | None = None,
 ) -> None:
     """Merge per-subtype tables into genotype-qualified, run-wide ones."""
     workflow.merge_cluster_tables(sorted(cluster_tables.items()), out_clusters)
     workflow.merge_link_tables(sorted(link_tables.items()), out_links)
-    annotate_clusters(out_clusters, variants_csv, metadata_rows, patient_column)
+    annotate_clusters(out_clusters, variants_csv, metadata_rows, patient_column, sample_column)
 
 
 def annotate_clusters(
@@ -222,68 +223,84 @@ def annotate_clusters(
     variants_csv: Path | None,
     metadata_rows: Sequence[Mapping[str, Any]] = (),
     patient_column: str | None = None,
+    sample_column: str | None = None,
 ) -> None:
-    """Add base_sample_id / mixed_infection and the sequence and patient counts per cluster."""
+    """Add base_sample_id / mixed_infection and the sequence, sample and patient counts."""
     plan = (
         variants.read_variants_csv(variants_csv)
         if variants_csv is not None
         else variants.VariantPlan(records=[])
     )
     variants.annotate_cluster_table(clusters_csv, plan)
-    apply_patient_sizes(clusters_csv, metadata_rows, patient_column)
+    apply_patient_sizes(clusters_csv, metadata_rows, patient_column, sample_column)
 
 
-def check_patient_column(metadata_rows: Sequence[Mapping[str, Any]], patient_column: str | None) -> None:
-    if patient_column is None:
+def check_grouping_columns(
+    metadata_rows: Sequence[Mapping[str, Any]], *columns: str | None
+) -> None:
+    named = [c for c in columns if c is not None]
+    if not named:
         return
     if not metadata_rows:
-        raise ValueError("--patient-column needs --metadata")
-    if patient_column not in metadata.metadata_fields(metadata_rows):
-        raise ValueError(
-            f"--patient-column '{patient_column}' is not a metadata column "
-            f"(available: {', '.join(metadata.metadata_fields(metadata_rows))})"
-        )
+        raise ValueError("--patient-column / --sample-column need --metadata")
+    available = metadata.metadata_fields(metadata_rows)
+    for column in named:
+        if column not in available:
+            raise ValueError(
+                f"'{column}' is not a metadata column (available: {', '.join(available)})"
+            )
 
 
 def apply_patient_sizes(
     clusters_csv: Path,
     metadata_rows: Sequence[Mapping[str, Any]],
     patient_column: str | None,
+    sample_column: str | None = None,
 ) -> None:
-    """Count each cluster's sequences and patients; with a patient column, size by patients.
+    """Count each cluster's sequences, samples and patients; optionally size by patients.
 
     Several sequences from one person (a re-test, a serial sample) are not transmission
     evidence, so with ``patient_column`` set ``cluster_size`` is the number of distinct
     patients: a cluster holding one patient behaves like a singleton in plots and gets no
-    persistent label. A sample without a patient value counts as its own patient. Without a
-    patient column ``cluster_size`` is the number of sequences.
+    persistent label. A sample without a patient (or sample) value counts as its own.
+    Without a patient column ``cluster_size`` is the number of sequences. ``sample_column``
+    only changes ``cluster_samples``, which counts distinct physical samples (one patient
+    can give several).
     """
-    check_patient_column(metadata_rows, patient_column)
+    check_grouping_columns(metadata_rows, patient_column, sample_column)
     rows = read_csv_rows(clusters_csv)
     with clusters_csv.open(newline="", encoding="utf-8") as handle:
         fieldnames = list(csv.DictReader(handle).fieldnames or ())
-    patient_of: dict[str, str] = {}
-    if patient_column:
-        for record in metadata_rows:
-            value = str(record.get(patient_column) or "").strip()
-            if value and value != metadata.MISSING_VALUE:
-                patient_of[str(record["sample_id"])] = value
 
-    def patient(row: Mapping[str, str]) -> str:
-        key = row.get(variants.BASE_SAMPLE_FIELD) or row["sample_id"]
-        return patient_of.get(key, key)
+    def lookup(column: str | None) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for record in metadata_rows if column else ():
+            value = str(record.get(column) or "").strip()
+            if value and value != metadata.MISSING_VALUE:
+                found[str(record["sample_id"])] = value
+        return found
+
+    patient_of, sample_of = lookup(patient_column), lookup(sample_column)
+
+    def key(row: Mapping[str, str]) -> str:
+        return row.get(variants.BASE_SAMPLE_FIELD) or row["sample_id"]
 
     sequences: dict[str, int] = {}
     patients: dict[str, set[str]] = {}
+    samples: dict[str, set[str]] = {}
     for row in rows:
-        sequences[row["cluster_id"]] = sequences.get(row["cluster_id"], 0) + 1
-        patients.setdefault(row["cluster_id"], set()).add(patient(row))
-    for extra in ("cluster_sequences", "cluster_patients"):
+        cluster = row["cluster_id"]
+        sequences[cluster] = sequences.get(cluster, 0) + 1
+        patients.setdefault(cluster, set()).add(patient_of.get(key(row), key(row)))
+        samples.setdefault(cluster, set()).add(sample_of.get(key(row), key(row)))
+    for extra in ("cluster_sequences", "cluster_samples", "cluster_patients"):
         if extra not in fieldnames:
             fieldnames.append(extra)
     for row in rows:
-        row["cluster_sequences"] = sequences[row["cluster_id"]]
-        row["cluster_patients"] = len(patients[row["cluster_id"]])
+        cluster = row["cluster_id"]
+        row["cluster_sequences"] = sequences[cluster]
+        row["cluster_samples"] = len(samples[cluster])
+        row["cluster_patients"] = len(patients[cluster])
         row["cluster_size"] = row["cluster_patients"] if patient_column else row["cluster_sequences"]
     with clusters_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -521,6 +538,8 @@ def _add_patient_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--metadata", type=Path, default=None)
     parser.add_argument("--patient-column", default=None,
                         help="Metadata column identifying the person; clusters are then sized by patients")
+    parser.add_argument("--sample-column", default=None,
+                        help="Metadata column identifying the physical sample (for cluster_samples)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -710,7 +729,9 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
         extra_tn93_args=args.extra_tn93_args,
         quiet=not args.verbose,
     )
-    annotate_clusters(args.out_clusters, args.variants, _load_metadata(args.metadata), args.patient_column)
+    annotate_clusters(
+        args.out_clusters, args.variants, _load_metadata(args.metadata), args.patient_column, args.sample_column
+    )
     print(f"{args.method} threshold {threshold:.4g}")
     return 0
 
@@ -734,6 +755,7 @@ def _cmd_merge(args: argparse.Namespace) -> int:
         args.variants,
         _load_metadata(args.metadata),
         args.patient_column,
+        args.sample_column,
     )
     return 0
 

@@ -22,8 +22,8 @@ workflow {
     if (params.distance !in ['tn93', 'snp', 'both']) {
         error "--distance must be tn93, snp or both (got '${params.distance}')"
     }
-    if (params.patient_column && !params.metadata) {
-        error "--patient_column requires --metadata <csv> containing that column"
+    if ((params.patient_column || params.sample_column) && !params.metadata) {
+        error "--patient_column / --sample_column require --metadata <csv> containing those columns"
     }
     if (params.update_registry && !params.registry) {
         error "--update_registry requires --registry <directory>"

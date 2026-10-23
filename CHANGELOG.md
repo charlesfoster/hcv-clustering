@@ -19,7 +19,7 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 - **Persistent cluster labels** (`--registry`, `--update-registry`): labels such as `HCV-2610-001` survive
   between runs, merges keep the oldest label, splits are recorded, singletons are never labelled. Several
   clustering methods can be tracked in one registry.
-- **Cluster sizes by patient** (`--patient-column`); `cluster_sequences` and `cluster_patients` columns.
+- **Cluster sizes by patient** (`--patient-column`); `cluster_sequences`, `cluster_samples` (`--sample-column`) and `cluster_patients` columns.
 - **Mixed-infection handling**: repeated FASTA IDs are resolved into variants instead of failing.
 - **`run_info.json`** with every run: pipeline version and commit, tool versions, reference data, parameters.
 - `hcv-stage` commands (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`,

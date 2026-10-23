@@ -224,7 +224,7 @@ Several sequences from one person (a re-test, a serial sample) are not evidence 
 pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-column patient_id
 ```
 
-`cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences` and `cluster_patients` as well, with or without this option. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
+`cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences`, `cluster_samples` and `cluster_patients` as well, with or without this option. `--sample-column` names a column identifying the physical sample (one patient can give several), so that `cluster_samples` counts distinct samples. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
 
 ### GUI
 

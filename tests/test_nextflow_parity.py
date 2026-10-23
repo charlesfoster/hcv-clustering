@@ -41,10 +41,10 @@ def _write_metadata(path: Path) -> Path:
     ids = dict.fromkeys(line[1:].strip() for line in FIXTURE.read_text().splitlines() if line.startswith(">"))
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["sample_id", "patient_index", "site"])
+        writer.writerow(["sample_id", "patient_index", "sample_index", "site"])
         for sample in ids:
             patient = "P_A12" if sample in ("clusterA_1", "clusterA_2") else f"P_{sample}"
-            writer.writerow([sample, patient, "X"])
+            writer.writerow([sample, patient, f"S_{sample}", "X"])
     return path
 
 
@@ -55,13 +55,13 @@ def test_cli_and_workflow_agree(tmp_path: Path) -> None:
     subprocess.run(
         [sys.executable, "-m", "hcv_cluster", "run", "-i", str(FIXTURE), "-o", str(cli_out),
          "--registry", str(tmp_path / "reg_cli"), "--update-registry",
-         "--metadata", str(metadata), "--patient-column", "patient_index", *shared],
+         "--metadata", str(metadata), "--patient-column", "patient_index", "--sample-column", "sample_index", *shared],
         check=True, capture_output=True, cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(ROOT)},
     )
     subprocess.run(
         ["nextflow", "run", str(ROOT / "main.nf"), "--input", str(FIXTURE), "--outdir", str(nf_out),
          "--registry", str(tmp_path / "reg_nf"), "--update_registry", "true",
-         "--metadata", str(metadata), "--patient_column", "patient_index",
+         "--metadata", str(metadata), "--patient_column", "patient_index", "--sample_column", "sample_index",
          "--distance", "both", "--label_date", "2026-10-23"],
         check=True, capture_output=True, cwd=tmp_path, env={**os.environ, "NXF_WORK": str(tmp_path / "work")},
     )

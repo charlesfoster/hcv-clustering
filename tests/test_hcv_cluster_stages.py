@@ -90,6 +90,17 @@ def test_stage_chain_produces_labelled_clusters_and_a_complete_audit(tmp_path: P
          "--variants", str(tmp_path / "variants.csv"), "--genotypes", str(tmp_path / "genotypes.csv"),
          "--qc", f"1a={tmp_path / 'prep.qc.csv'}", "--decisions", f"1a={tmp_path / 'decisions.csv'}",
          "--clusters", str(tmp_path / "clusters.labelled.csv"), "--outdir", str(tmp_path / "out"))
+    # Plots are drawn from the same per-subtype tables the workflow publishes.
+    (tmp_path / "tables").mkdir()
+    (tmp_path / "tables" / "1a.snp.clusters.csv").write_text((tmp_path / "clusters_1a.csv").read_text())
+    (tmp_path / "tables" / "1a.snp.links.csv").write_text((tmp_path / "links.csv").read_text())
+    (tmp_path / "plots").mkdir()
+    (tmp_path / "plots" / "clusters.csv").write_text((tmp_path / "clusters.labelled.csv").read_text())
+    (tmp_path / "plots" / "links.csv").write_text((tmp_path / "merged_links.csv").read_text())
+    _run("plot", "--distance", "snp", "--tables-dir", str(tmp_path / "tables"), "--outdir", str(tmp_path / "plots"),
+         "--plot-network", "html", "--plot-scope", "combined")
+    assert "HCV-2610-001" in (tmp_path / "plots" / "network.html").read_text()
+
     audit = {(r["sample_id"], r["input_record"]): r for r in _rows(tmp_path / "out" / "sample_audit.csv")}
     outcome = {sid: (r["overall_status"], r["failed_stage"]) for (sid, _), r in audit.items()}
     assert len(audit) == len(records)  # one row per input record

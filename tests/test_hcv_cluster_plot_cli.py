@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hcv_cluster import cli
+from hcv_cluster import cli, plotting
 
 
 def _write_rows(path: Path, fieldnames: tuple[str, ...], rows: list[dict[str, object]]) -> None:
@@ -84,7 +84,7 @@ def test_small_multiples_reject_composite_encodings() -> None:
     )
 
     with pytest.raises(ValueError, match="cannot be combined"):
-        cli._validate_plot_fields(
+        plotting.validate_plot_fields(
             args, [{"sample_id": "A", "location": "P1"}]
         )
 
@@ -170,10 +170,10 @@ def test_render_cluster_plot_dispatches_formats(
     figure = SimpleNamespace(write_image=Mock(), write_html=Mock())
     build = Mock(return_value=figure)
     export_svg = Mock()
-    monkeypatch.setattr(cli.viz, "build_network_figure", build)
-    monkeypatch.setattr(cli.viz, "export_figure_svg", export_svg)
+    monkeypatch.setattr(plotting.viz, "build_network_figure", build)
+    monkeypatch.setattr(plotting.viz, "export_figure_svg", export_svg)
 
-    cli._render_cluster_plot(
+    plotting.render_cluster_plot(
         plot_format,
         False,
         tmp_path,
@@ -212,9 +212,9 @@ def test_combined_render_uses_merged_tables_and_by_genotype_layout(
     snp_per_links = tmp_path / "by_genotype" / "1a" / "snp_links.csv"
     _write_network_tables(snp_per_clusters, snp_per_links)
     render = Mock()
-    monkeypatch.setattr(cli, "_render_cluster_plot", render)
+    monkeypatch.setattr(plotting, "render_cluster_plot", render)
 
-    cli._render_requested_plots(
+    plotting.render_requested_plots(
         _plot_args(
             distance="both", plot_scope="combined", plot_combined_layout="by-genotype"
         ),
@@ -250,9 +250,9 @@ def test_plot_scope_both_dispatches_per_genotype_and_combined(tmp_path: Path, mo
     per_links = tmp_path / "by_genotype" / "1a" / "links.csv"
     _write_network_tables(per_clusters, per_links)
     render = Mock()
-    monkeypatch.setattr(cli, "_render_cluster_plot", render)
+    monkeypatch.setattr(plotting, "render_cluster_plot", render)
 
-    cli._render_requested_plots(
+    plotting.render_requested_plots(
         _plot_args(plot_scope="both"),
         tmp_path,
         [],
@@ -270,9 +270,9 @@ def test_plot_scope_both_dispatches_per_genotype_and_combined(tmp_path: Path, mo
 def test_snp_only_combined_plot_uses_primary_root_paths(tmp_path: Path, monkeypatch) -> None:
     _write_network_tables(tmp_path / "clusters.csv", tmp_path / "links.csv", combined=True)
     render = Mock()
-    monkeypatch.setattr(cli, "_render_cluster_plot", render)
+    monkeypatch.setattr(plotting, "render_cluster_plot", render)
 
-    cli._render_requested_plots(
+    plotting.render_requested_plots(
         _plot_args(distance="snp", plot_scope="combined"),
         tmp_path,
         [],
@@ -330,9 +330,9 @@ def test_render_cluster_plot_passes_layout_options_to_renderer(
     _write_network_tables(clusters, links, combined=True)
     figure = SimpleNamespace(write_image=Mock(), write_html=Mock())
     build = Mock(return_value=figure)
-    monkeypatch.setattr(cli.viz, builder, build)
+    monkeypatch.setattr(plotting.viz, builder, build)
 
-    cli._render_cluster_plot(
+    plotting.render_cluster_plot(
         "html", False, tmp_path, clusters, links, "", **render_kwargs
     )
 

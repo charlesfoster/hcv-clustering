@@ -256,6 +256,8 @@ nextflow run main.nf -profile test,docker --outdir test_results
 
 Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed, and `--reuse_alignments <previous outdir>` to re-align only new or changed sequences (the same behaviour as `--reuse-alignments` on the CLI). Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
 
+Network plots use the same options as the CLI with underscores: `--plot_network html --plot_scope both --plot_color_by location`, where the colour field is a column of your `--metadata` CSV. Interactive HTML works everywhere, including the container; PNG and SVG additionally need a local Chrome, which the container does not include, so they are skipped there with a warning.
+
 To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
 
 ```groovy
@@ -263,7 +265,7 @@ include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
 HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
 ```
 
-The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv_cluster.stages <stage>`) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
+The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv_cluster.stages <stage>`) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
 
 **Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
 
@@ -500,6 +502,7 @@ hcv_cluster/            the Python package (also pip-installable: pyproject.toml
   genotyping.py         minimap2 subtype assignment
   prep.py               MAFFT alignment and region extraction
   methods.py            region thresholds, SNP distance
+  plotting.py           network plots (CLI flags and the plot stage)
   variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py
   data/                 genotype panel, ICTV table, bundled GenBank references
 streamlit_app.py        GUI entry point

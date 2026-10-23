@@ -1,4 +1,4 @@
-include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; AUDIT } from '../modules/hcv_cluster.nf'
+include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; AUDIT; PLOT } from '../modules/hcv_cluster.nf'
 
 /*
  * HCV genomic clustering.
@@ -70,6 +70,22 @@ workflow HCV_CLUSTER {
         final_clusters,
         metadata,
     )
+
+    // Optional network plots (--plot_network html|png|svg|both|all).
+    if (params.plot_network && params.plot_network != 'none') {
+        primary_links = MERGE.out.links.filter { it.name == "${methods[0]}.links.csv" }
+        secondary_tables = params.distance == 'both'
+            ? MERGE.out.clusters.filter { m, f -> m == 'snp' }.map { m, f -> f }
+                .mix(MERGE.out.links.filter { it.name == 'snp.links.csv' }).collect()
+            : Channel.value([])
+        PLOT(
+            final_clusters,
+            primary_links,
+            secondary_tables,
+            CLUSTER.out.clusters.mix(CLUSTER.out.links).map { m, f -> f }.collect().ifEmpty([]),
+            metadata,
+        )
+    }
 
     emit:
     clusters = final_clusters

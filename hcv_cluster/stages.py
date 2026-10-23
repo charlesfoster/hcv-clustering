@@ -533,6 +533,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-changes", type=Path, default=Path("label_changes.csv"))
     p.set_defaults(func=_cmd_label)
 
+    try:
+        from . import plotting
+    except ImportError:  # networkx / plotly are optional; the other stages do not need them
+        plotting = None
+    if plotting is not None:
+        p = sub.add_parser("plot", help="Network plots from finished cluster tables")
+        p.add_argument("--distance", choices=("tn93", "snp", "both"), default="tn93")
+        p.add_argument("--tables-dir", type=Path, required=True,
+                       help="Directory of <genotype>.<method>.clusters.csv / .links.csv files")
+        p.add_argument("--metadata", type=Path, default=None)
+        p.add_argument("--outdir", type=Path, default=Path("."),
+                       help="Directory holding clusters.csv and links.csv (plus .snp variants "
+                            "with --distance both); plots are written beneath it")
+        plotting.add_plot_arguments(p, lambda h: h)
+        p.set_defaults(func=_cmd_plot)
+
     p = sub.add_parser("audit", help="Sample audit, metadata tables and labelled survivor FASTA")
     p.add_argument("--input", type=Path, required=True, help="Original input FASTA")
     p.add_argument("--resolved-fasta", type=Path, default=None)
@@ -659,6 +675,31 @@ def _cmd_label(args: argparse.Namespace) -> int:
         out_labels=args.out_labels,
         out_changes=args.out_changes,
         registry_out=args.registry_out,
+    )
+    return 0
+
+
+def _cmd_plot(args: argparse.Namespace) -> int:
+    from . import plotting
+
+    metadata_rows = _load_metadata(args.metadata)
+    plotting.validate_plot_fields(args, metadata_rows)
+    primary = "snp" if args.distance == "snp" else "tn93"
+
+    def tables(method: str) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
+        return (
+            sorted(_tables_in_dir(args.tables_dir, method, "clusters").items()),
+            sorted(_tables_in_dir(args.tables_dir, method, "links").items()),
+        )
+
+    cluster_tables, link_tables = tables(primary)
+    snp_cluster_tables, snp_link_tables = tables("snp") if args.distance == "both" else ([], [])
+    for genotype, _path in cluster_tables + snp_cluster_tables:
+        (args.outdir / "by_genotype" / workflow.safe_genotype_name(genotype)).mkdir(
+            parents=True, exist_ok=True
+        )
+    plotting.render_requested_plots(
+        args, args.outdir, metadata_rows, cluster_tables, link_tables, snp_cluster_tables, snp_link_tables
     )
     return 0
 

@@ -42,6 +42,12 @@ mafft = "7.526.*"
 minimap2 = "2.31.*"
 tn93 = "1.1.*"
 
+# Network plots (HTML works anywhere; PNG/SVG additionally need a local Chrome).
+[feature.viz.dependencies]
+networkx = ">=3.2"
+plotly = ">=5.20"
+python-kaleido = ">=1.3.0,<2"
+
 [feature.nextflow.dependencies]
 nextflow = ">=24.04"
 
@@ -51,4 +57,4 @@ hcv-nextflow = "nextflow run main.nf"
 [environments]
 default = { features = ["core"], solve-group = "main" }
 nf = { features = ["core", "nextflow"], solve-group = "main" }
-pipeline = { features = ["core"], no-default-feature = true, solve-group = "main" }
+pipeline = { features = ["core", "viz"], no-default-feature = true, solve-group = "main" }

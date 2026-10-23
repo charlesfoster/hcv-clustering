@@ -258,3 +258,45 @@ process AUDIT {
         --outdir .
     """
 }
+
+process PLOT {
+    publishDir "${params.outdir}", mode: "copy"
+
+    input:
+    path clusters          // the final (labelled) primary cluster table
+    path links
+    path "snp/*"           // snp.clusters.csv + snp.links.csv when --distance both
+    path "tables/*"        // every <genotype>.<method>.clusters.csv / .links.csv
+    path metadata
+
+    output:
+    path "by_genotype", optional: true
+    path "*network.*",   optional: true
+
+    script:
+    def metadataArg = metadata.name == "NO_FILE" ? "" : "--metadata ${metadata}"
+    def lists = [
+        '--plot-size-order': params.plot_size_order,
+        '--plot-small-multiple-field': params.plot_small_multiple_field,
+        '--plot-hover-field': params.plot_hover_field,
+    ].collect { flag, values -> values ? [values].flatten().collect { "${flag} '${it}'" }.join(' ') : '' }.join(' ')
+    def scalars = [
+        '--plot-network': params.plot_network,
+        '--plot-scope': params.plot_scope,
+        '--plot-combined-layout': params.plot_combined_layout,
+        '--plot-node-spacing': params.plot_node_spacing,
+        '--plot-color-by': params.plot_color_by,
+        '--plot-symbol-by': params.plot_symbol_by,
+        '--plot-size-by': params.plot_size_by,
+        '--plot-outline-by': params.plot_outline_by,
+        '--plot-center-by': params.plot_center_by,
+    ].findAll { flag, value -> value }.collect { flag, value -> "${flag} '${value}'" }.join(' ')
+    """
+    # The plotting code reads the merged tables by their usual names.
+    [ "${clusters}" = clusters.csv ] || cp ${clusters} clusters.csv
+    [ "${links}" = links.csv ] || cp ${links} links.csv
+    if [ -e snp/snp.clusters.csv ]; then cp snp/snp.clusters.csv clusters.snp.csv; cp snp/snp.links.csv links.snp.csv; fi
+    ${stage('plot')} --distance ${params.distance} --tables-dir tables --outdir . ${metadataArg} \\
+        ${scalars} ${lists} ${params.plot_hide_singletons ? '--plot-hide-singletons' : ''}
+    """
+}

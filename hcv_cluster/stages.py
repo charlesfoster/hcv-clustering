@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -610,6 +611,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-changes", type=Path, default=Path("label_changes.csv"))
     p.set_defaults(func=_cmd_label)
 
+    p = sub.add_parser("provenance", help="Write run_info.json: versions, tools and parameters")
+    p.add_argument("--out", type=Path, default=Path("run_info.json"))
+    p.add_argument("--params-json", type=Path, default=None, help="JSON file of the run's parameters")
+    p.add_argument("--extra-json", type=Path, default=None, help="JSON file of engine details to include")
+    p.set_defaults(func=_cmd_provenance)
+
     try:
         from . import plotting
     except ImportError:  # networkx / plotly are optional; the other stages do not need them
@@ -755,6 +762,16 @@ def _cmd_label(args: argparse.Namespace) -> int:
         out_changes=args.out_changes,
         registry_out=args.registry_out,
     )
+    return 0
+
+
+def _cmd_provenance(args: argparse.Namespace) -> int:
+    from . import provenance
+
+    def load(path: Path | None) -> dict:
+        return json.loads(path.read_text()) if path is not None else {}
+
+    provenance.write(args.out, load(args.params_json), load(args.extra_json))
     return 0
 
 

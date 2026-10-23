@@ -1,4 +1,4 @@
-include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; AUDIT; PLOT } from '../modules/hcv_cluster.nf'
+include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; AUDIT; PLOT; PROVENANCE } from '../modules/hcv_cluster.nf'
 
 /*
  * HCV genomic clustering.
@@ -86,6 +86,8 @@ workflow HCV_CLUSTER {
             metadata,
         )
     }
+
+    PROVENANCE()
 
     emit:
     clusters = final_clusters

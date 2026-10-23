@@ -306,3 +306,32 @@ process PLOT {
         ${scalars} ${lists} ${params.plot_hide_singletons ? '--plot-hide-singletons' : ''}
     """
 }
+
+// Records the pipeline version/commit, tool versions, reference data and parameters of a run.
+process PROVENANCE {
+    publishDir "${params.outdir}", mode: "copy"
+
+    output:
+    path "run_info.json"
+
+    script:
+    def parameters = groovy.json.JsonOutput.toJson(params.collectEntries { k, v -> [k, v?.toString()] })
+    def engine = groovy.json.JsonOutput.toJson([
+        engine: "nextflow ${nextflow.version}",
+        run_name: workflow.runName,
+        pipeline_revision: workflow.revision,
+        pipeline_commit_id: workflow.commitId,
+        profile: workflow.profile,
+        container: workflow.container?.toString(),
+        command_line: workflow.commandLine,
+    ])
+    """
+    cat > params.json <<'JSON'
+    ${parameters}
+    JSON
+    cat > engine.json <<'JSON'
+    ${engine}
+    JSON
+    ${stage('provenance')} --out run_info.json --params-json params.json --extra-json engine.json
+    """
+}

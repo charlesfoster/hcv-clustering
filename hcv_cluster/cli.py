@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import genotyping, labels, metadata, plotting, prep, stages, variants, workflow
+from . import genotyping, labels, metadata, plotting, prep, provenance, stages, variants, workflow
 
 
 from .methods import (  # noqa: F401  (re-exported for existing callers)
@@ -509,6 +509,11 @@ def command_run(args: argparse.Namespace) -> int:
         snp_link_tables,
     )
 
+    provenance.write(
+        outdir / "run_info.json",
+        {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items() if key != "func"},
+        {"engine": "hcv-cluster run"},
+    )
     print(f"Done. Results written to: {outdir}")
     return 0
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hcv-cluster"
-version = "0.2.0"
+dynamic = ["version"]
 description = "HCV genomic clustering for transmission surveillance"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,9 @@ gui = ["hcv-cluster[viz]", "streamlit>=1.32"]
 hcv-cluster = "hcv_cluster.cli:main"
 hcv-stage = "hcv_cluster.stages:main"
 hcv-workflow = "hcv_cluster.workflow:main"
+
+[tool.hatch.version]
+path = "hcv_cluster/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["hcv_cluster"]  # reference records under hcv_cluster/data are included

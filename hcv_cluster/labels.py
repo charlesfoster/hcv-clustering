@@ -42,6 +42,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Collection, Iterator, Mapping
 
+from . import __version__
+
 DEFAULT_PREFIX = "HCV"
 UNASSIGNED = "UNASSIGNED"
 SINGLETON_NOTE = "singleton"
@@ -275,7 +277,7 @@ def label_table(registry: Registry, track: str, present: Mapping[Member, str]) -
 
 _LABEL_FIELDS = [f.name for f in fields(LabelRecord)]
 _EVENT_FIELDS = ["run_id", "date", "track", "event", "label", "related_label", "detail"]
-_RUN_FIELDS = ["run_id", "date", "track", "n_samples", "n_labelled", "committed", "outdir"]
+_RUN_FIELDS = ["run_id", "date", "track", "n_samples", "n_labelled", "committed", "outdir", "pipeline_version"]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -391,6 +393,7 @@ def label_run(
                 "n_labelled": str(sum(1 for label in result.labels.values() if label and label != UNASSIGNED)),
                 "committed": "true" if commit else "false",
                 "outdir": outdir,
+                "pipeline_version": __version__,
             }
         )
         table = label_table(working, track, result.labels)

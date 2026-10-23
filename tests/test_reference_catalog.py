@@ -4,14 +4,14 @@ Most GenBank records for the older HCV reference genomes (D00944 = HC-J6,
 D17763 = NZL1, D84262 = Th580, ...) carry no subtype string of their own, so the
 catalog's subtype assignments cannot be checked against the records themselves.
 ICTV Flaviviridae/Hepacivirus Table 1 is the authority that makes them auditable,
-and reference_data/ictv_hcv_subtypes.tsv mirrors it.
+and hcv_cluster/data/ictv_hcv_subtypes.tsv mirrors it.
 """
 
 from pathlib import Path
 
-import hcv_cluster_prep
+from hcv_cluster import prep
 
-ICTV_TABLE = Path(__file__).resolve().parent.parent / "reference_data" / "ictv_hcv_subtypes.tsv"
+ICTV_TABLE = Path(__file__).resolve().parent.parent / "hcv_cluster" / "data" / "ictv_hcv_subtypes.tsv"
 
 # Catalog entries that deliberately use a genome other than ICTV's first-listed
 # exemplar. Each is a different isolate of the *same* ICTV-confirmed subtype, kept
@@ -53,7 +53,7 @@ def test_catalog_accessions_match_ictv_or_a_pinned_deviation() -> None:
     """Every accession is either ICTV's exemplar or a documented substitute."""
     ictv = load_ictv_table()
     unexpected = []
-    for subtype, spec in sorted(hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG.items()):
+    for subtype, spec in sorted(prep.DEFAULT_REFERENCE_CATALOG.items()):
         versionless = spec.accession.split(".")[0]
         if versionless in ictv[subtype]:
             continue
@@ -68,7 +68,7 @@ def test_catalog_accessions_match_ictv_or_a_pinned_deviation() -> None:
 
 def test_pinned_deviations_are_all_still_in_the_catalog() -> None:
     """A deviation left behind after an accession change would silently stop checking."""
-    catalog = hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG
+    catalog = prep.DEFAULT_REFERENCE_CATALOG
     stale = [
         subtype
         for subtype, accession in ICTV_EXEMPLAR_DEVIATIONS.items()
@@ -79,14 +79,14 @@ def test_pinned_deviations_are_all_still_in_the_catalog() -> None:
 
 def test_uncovered_subtypes_are_exactly_the_documented_ones() -> None:
     ictv = load_ictv_table()
-    uncovered = set(ictv) - set(hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG)
+    uncovered = set(ictv) - set(prep.DEFAULT_REFERENCE_CATALOG)
     assert uncovered == KNOWN_UNCOVERED
 
 
 def test_reference_spec_genotype_matches_its_catalog_key() -> None:
     mismatched = [
         (key, spec.genotype)
-        for key, spec in hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG.items()
+        for key, spec in prep.DEFAULT_REFERENCE_CATALOG.items()
         if key != spec.genotype
     ]
     assert mismatched == []
@@ -95,7 +95,7 @@ def test_reference_spec_genotype_matches_its_catalog_key() -> None:
 def test_accessions_are_unique_across_subtypes() -> None:
     seen: dict[str, str] = {}
     duplicates = []
-    for subtype, spec in sorted(hcv_cluster_prep.DEFAULT_REFERENCE_CATALOG.items()):
+    for subtype, spec in sorted(prep.DEFAULT_REFERENCE_CATALOG.items()):
         if spec.accession in seen:
             duplicates.append(f"{spec.accession} used by {seen[spec.accession]} and {subtype}")
         seen[spec.accession] = subtype

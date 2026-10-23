@@ -25,7 +25,7 @@ def test_gui_renders_composite_and_small_multiple_networks(tmp_path: Path) -> No
         encoding="utf-8",
     )
 
-    app_path = Path(__file__).resolve().parents[1] / "hcv_cluster_gui.py"
+    app_path = Path(__file__).resolve().parents[1] / "streamlit_app.py"
     app = AppTest.from_file(str(app_path), default_timeout=15)
     app.session_state["last_run"] = {"outdir": str(results), "distance": "tn93"}
     app.session_state["cluster_view"] = {

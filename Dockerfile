@@ -15,7 +15,8 @@ WORKDIR /opt/hcv-cluster
 COPY pixi.toml pixi.lock ./
 RUN pixi install --locked --environment pipeline && pixi clean cache --yes
 
-COPY *.py ./
-COPY reference_data ./reference_data
+# The package carries its own reference data (hcv_cluster/data).
+COPY hcv_cluster ./hcv_cluster
 
-ENV PATH=/opt/hcv-cluster/.pixi/envs/pipeline/bin:$PATH
+ENV PATH=/opt/hcv-cluster/.pixi/envs/pipeline/bin:$PATH \
+    PYTHONPATH=/opt/hcv-cluster

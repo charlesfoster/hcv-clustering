@@ -23,8 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
 
-import assign_hcv_genotypes_from_fasta
-import hcv_cluster_prep
+from . import genotyping, prep
 
 VARIANT_SEPARATOR = "__v"
 SELECTION_MODES = ("region-coverage", "completeness")
@@ -77,7 +76,7 @@ class VariantRecord:
 class VariantPlan:
     """Result of resolving repeated identifiers in one input FASTA."""
 
-    records: list[hcv_cluster_prep.FastaRecord]
+    records: list[prep.FastaRecord]
     variants: list[VariantRecord] = field(default_factory=list)
 
     @property
@@ -100,19 +99,19 @@ def completeness(sequence: str) -> int:
     return sum(1 for base in _normalized_sequence(sequence) if base in "ACGT")
 
 
-def read_input_records(path: Path) -> list[hcv_cluster_prep.FastaRecord]:
+def read_input_records(path: Path) -> list[prep.FastaRecord]:
     """Read FASTA records (plain or .gz) without rejecting repeated identifiers."""
-    records: list[hcv_cluster_prep.FastaRecord] = []
+    records: list[prep.FastaRecord] = []
     header: str | None = None
     chunks: list[str] = []
-    with assign_hcv_genotypes_from_fasta.open_text(path) as handle:
+    with genotyping.open_text(path) as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
             if line.startswith(">"):
                 if header is not None:
-                    records.append(hcv_cluster_prep.FastaRecord(header, "".join(chunks)))
+                    records.append(prep.FastaRecord(header, "".join(chunks)))
                 header = line[1:].strip()
                 if not header:
                     raise ValueError(f"Blank FASTA header at line {line_number}: {path}")
@@ -122,20 +121,20 @@ def read_input_records(path: Path) -> list[hcv_cluster_prep.FastaRecord]:
             else:
                 chunks.append(line)
     if header is not None:
-        records.append(hcv_cluster_prep.FastaRecord(header, "".join(chunks)))
+        records.append(prep.FastaRecord(header, "".join(chunks)))
     return records
 
 
-def resolve_duplicate_ids(records: list[hcv_cluster_prep.FastaRecord]) -> VariantPlan:
+def resolve_duplicate_ids(records: list[prep.FastaRecord]) -> VariantPlan:
     """Drop exact repeats and give distinct same-ID sequences unique variant names."""
-    by_id: dict[str, list[tuple[int, hcv_cluster_prep.FastaRecord]]] = {}
+    by_id: dict[str, list[tuple[int, prep.FastaRecord]]] = {}
     for index, record in enumerate(records, start=1):
         by_id.setdefault(record.header.split()[0], []).append((index, record))
     if all(len(group) == 1 for group in by_id.values()):
         return VariantPlan(records=list(records))
 
     existing_ids = set(by_id)
-    output: list[hcv_cluster_prep.FastaRecord] = []
+    output: list[prep.FastaRecord] = []
     variants: list[VariantRecord] = []
     for sample_id, group in by_id.items():
         if len(group) == 1:
@@ -191,7 +190,7 @@ def resolve_duplicate_ids(records: list[hcv_cluster_prep.FastaRecord]) -> Varian
         if index in dropped:
             continue
         name = kept_names.get(index)
-        output.append(hcv_cluster_prep.FastaRecord(name, record.sequence) if name else record)
+        output.append(prep.FastaRecord(name, record.sequence) if name else record)
     return VariantPlan(records=output, variants=variants)
 
 
@@ -267,9 +266,9 @@ def select_same_genotype(
 def remove_from_fasta(path: Path, sequence_ids: set[str]) -> None:
     if not sequence_ids or not path.exists():
         return
-    records = hcv_cluster_prep.read_fasta_records(path)
+    records = prep.read_fasta_records(path)
     kept = [record for record in records if record.header.split()[0] not in sequence_ids]
-    hcv_cluster_prep.write_fasta_records(kept, path)
+    prep.write_fasta_records(kept, path)
 
 
 def annotate_cluster_table(path: Path, plan: VariantPlan) -> None:
@@ -296,7 +295,7 @@ def annotate_cluster_table(path: Path, plan: VariantPlan) -> None:
         writer.writerows(rows)
 
 
-def read_variants_csv(path: Path, records: list[hcv_cluster_prep.FastaRecord] | None = None) -> VariantPlan:
+def read_variants_csv(path: Path, records: list[prep.FastaRecord] | None = None) -> VariantPlan:
     """Rebuild a plan from ``sequence_variants.csv`` (the file-based hand-off between stages)."""
     variants: list[VariantRecord] = []
     if path.exists():

@@ -18,8 +18,8 @@ import plotly.colors
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from hcv_cluster_labels import UNASSIGNED
-from hcv_cluster_metadata import AGE_RANGE_ORDER, MISSING_VALUE
+from .labels import UNASSIGNED
+from .metadata import AGE_RANGE_ORDER, MISSING_VALUE
 
 PositionMap = dict[str, tuple[float, float]]
 LayoutMode = Literal["spring", "components", "component_packed"]

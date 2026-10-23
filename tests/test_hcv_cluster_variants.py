@@ -3,13 +3,11 @@ from pathlib import Path
 
 import pytest
 
-import hcv_cluster_metadata
-import hcv_cluster_prep
-import hcv_cluster_variants as variants
+from hcv_cluster import metadata, prep, variants
 
 
-def _records(*pairs: tuple[str, str]) -> list[hcv_cluster_prep.FastaRecord]:
-    return [hcv_cluster_prep.FastaRecord(header, sequence) for header, sequence in pairs]
+def _records(*pairs: tuple[str, str]) -> list[prep.FastaRecord]:
+    return [prep.FastaRecord(header, sequence) for header, sequence in pairs]
 
 
 def test_identical_repeats_are_dropped_and_distinct_sequences_renamed() -> None:
@@ -89,7 +87,7 @@ def test_metadata_joins_on_base_sample_id() -> None:
         {"sample_id": "s__v1", "base_sample_id": "s", "cluster_id": "C1", "cluster_size": 1},
         {"sample_id": "s__v2", "base_sample_id": "s", "cluster_id": "C2", "cluster_size": 1},
     ]
-    joined, report = hcv_cluster_metadata.join_metadata(nodes, [{"sample_id": "s", "location": "P1"}])
+    joined, report = metadata.join_metadata(nodes, [{"sample_id": "s", "location": "P1"}])
     assert [row["location"] for row in joined] == ["P1", "P1"]
     assert report.missing_metadata_sample_ids == ()
     assert report.unknown_metadata_sample_ids == ()

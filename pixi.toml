@@ -6,10 +6,14 @@ platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
 version = "0.1.0"
 
 [tasks]
-hcv-cluster = "python hcv_cluster.py"
-hcv-cluster-gui = "streamlit run hcv_cluster_gui.py"
-hcv-workflow = "python hcv_workflow.py"
+hcv-cluster = "python -m hcv_cluster"
+hcv-stage = "python -m hcv_cluster.stages"
+hcv-cluster-gui = "streamlit run streamlit_app.py"
+hcv-workflow = "python -m hcv_cluster.workflow"
 test = "pytest"
+
+[activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT"
 
 [dependencies]
 python = ">=3.11"

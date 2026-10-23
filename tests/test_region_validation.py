@@ -1,6 +1,6 @@
 import pytest
 
-import hcv_cluster_prep
+from hcv_cluster import prep
 
 
 @pytest.mark.parametrize(
@@ -18,7 +18,7 @@ import hcv_cluster_prep
     ],
 )
 def test_validate_region_syntax_accepts_valid_expressions(region: str) -> None:
-    assert hcv_cluster_prep.validate_region_syntax(region) is None
+    assert prep.validate_region_syntax(region) is None
 
 
 @pytest.mark.parametrize(
@@ -32,6 +32,6 @@ def test_validate_region_syntax_accepts_valid_expressions(region: str) -> None:
 def test_validate_region_syntax_rejects_invalid_expressions(
     region: str, message_fragment: str
 ) -> None:
-    error = hcv_cluster_prep.validate_region_syntax(region)
+    error = prep.validate_region_syntax(region)
     assert error is not None
     assert message_fragment in error

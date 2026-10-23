@@ -1,11 +1,13 @@
 // Processes for the HCV clustering pipeline.
 //
 // These contain no scientific logic. Thresholds, region handling, genotype support and
-// sample bookkeeping are all decided by the Python stages (hcv_cluster_stages.py,
-// hcv_cluster_prep.py, assign_hcv_genotypes_from_fasta.py), the same code that
+// sample bookkeeping are all decided by the Python package in hcv_cluster/ (stages,
+// prep, genotyping), the same code that
 // `hcv-cluster run` uses, so the two ways of running cannot drift apart.
 
-def stage(name)  { "python ${params.code_dir}/hcv_cluster_stages.py ${name}" }
+// The package is run from params.code_dir (the repository, or /opt/hcv-cluster in the container).
+def py(module) { "PYTHONPATH=${params.code_dir} python -m hcv_cluster.${module}" }
+def stage(name) { "${py('stages')} ${name}" }
 def optionally(flag, value) { value != null && value != "" ? "${flag} ${value}" : "" }
 
 // The primary metric owns clusters.csv / links.csv; with --distance both, snp is secondary.
@@ -38,7 +40,7 @@ process GENOTYPE {
 
     script:
     """
-    python ${params.code_dir}/assign_hcv_genotypes_from_fasta.py \\
+    ${py('genotyping')} \\
         --input ${fasta} \\
         --output-csv genotypes.csv \\
         --outdir genotype_fastas \\
@@ -75,7 +77,7 @@ process PREP_ALIGN {
 
     script:
     """
-    python ${params.code_dir}/hcv_cluster_prep.py prep-align \\
+    ${py('prep')} prep-align \\
         --input ${genotype_fasta} \\
         --genotype ${genotype} \\
         --out-prefix ${genotype}.prep \\

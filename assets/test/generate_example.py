@@ -2,7 +2,7 @@
 """Regenerate assets/test/example.fasta: a small synthetic HCV 1a data set.
 
 Everything is derived from the public subtype 1a reference record in
-reference_data/genbank (no patient data), with fixed random seeds. It contains a
+hcv_cluster/data/genbank (no patient data), with fixed random seeds. It contains a
 5-sequence cluster, a pair, singletons, a mixed infection, an exact repeat, a
 sequence with too much missing data and a non-HCV sequence, so one run exercises
 every exclusion stage of the pipeline.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-import hcv_cluster_prep as prep  # noqa: E402
+from hcv_cluster import prep  # noqa: E402
 
 spec = prep.DEFAULT_REFERENCE_CATALOG["1a"]
 reference = prep.read_fasta_records(prep.DEFAULT_REFS_DIR / f"{spec.accession}.fasta")[0].sequence

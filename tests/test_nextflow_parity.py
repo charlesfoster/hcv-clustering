@@ -40,9 +40,9 @@ def test_cli_and_workflow_agree(tmp_path: Path) -> None:
     shared = ["--distance", "both", "--label-date", "2026-10-23"]
     cli_out, nf_out = tmp_path / "cli", tmp_path / "nf"
     subprocess.run(
-        [sys.executable, str(ROOT / "hcv_cluster.py"), "run", "-i", str(FIXTURE), "-o", str(cli_out),
+        [sys.executable, "-m", "hcv_cluster", "run", "-i", str(FIXTURE), "-o", str(cli_out),
          "--registry", str(tmp_path / "reg_cli"), "--update-registry", *shared],
-        check=True, capture_output=True, cwd=tmp_path,
+        check=True, capture_output=True, cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(ROOT)},
     )
     subprocess.run(
         ["nextflow", "run", str(ROOT / "main.nf"), "--input", str(FIXTURE), "--outdir", str(nf_out),

@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import assign_hcv_genotypes_from_fasta as genotyping
+from hcv_cluster import genotyping
 import pytest
 
 

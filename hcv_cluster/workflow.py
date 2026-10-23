@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-import assign_hcv_genotypes_from_fasta
-import hcv_cluster_prep
+from . import genotyping, prep
 
 
 @dataclass(frozen=True)
@@ -33,8 +32,8 @@ class LinkRow:
 
 
 def read_fasta_ids(path: Path) -> list[str]:
-    records = hcv_cluster_prep.read_fasta_records(path)
-    hcv_cluster_prep.reject_duplicate_ids(records)
+    records = prep.read_fasta_records(path)
+    prep.reject_duplicate_ids(records)
     return [record.header.split()[0] for record in records]
 
 
@@ -511,7 +510,7 @@ def command_all(args: argparse.Namespace) -> int:
         genotype_argv.extend(["--extra-minimap2-args", args.extra_minimap2_args])
     if args.keep_paf:
         genotype_argv.append("--keep-paf")
-    rc = assign_hcv_genotypes_from_fasta.main(genotype_argv)
+    rc = genotyping.main(genotype_argv)
     if rc:
         return rc
 
@@ -523,7 +522,7 @@ def command_all(args: argparse.Namespace) -> int:
     if not genotypes:
         raise RuntimeError("No passing genotype assignments were available to process")
 
-    reference_catalog = hcv_cluster_prep.load_reference_catalog(
+    reference_catalog = prep.load_reference_catalog(
         Path(args.reference_map) if args.reference_map else None
     )
     unsupported = [genotype for genotype in genotypes if genotype not in reference_catalog]
@@ -583,7 +582,7 @@ def command_all(args: argparse.Namespace) -> int:
             prep_argv.extend(["--region", args.region])
         if args.keep_temp:
             prep_argv.append("--keep-temp")
-        rc = hcv_cluster_prep.main(prep_argv)
+        rc = prep.main(prep_argv)
         if rc:
             return rc
 
@@ -680,7 +679,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
         help="Optional genotype/subtype to process after detection. May be repeated; defaults to all detected pass genotypes.",
     )
     parser.add_argument("--threshold", required=True, type=float, help="Maximum TN93 distance to link")
-    parser.add_argument("--panel-fasta", type=Path, default=assign_hcv_genotypes_from_fasta.DEFAULT_PANEL)
+    parser.add_argument("--panel-fasta", type=Path, default=genotyping.DEFAULT_PANEL)
     parser.add_argument("--minimap2", default="minimap2")
     parser.add_argument("--minimap2-preset", default="asm20")
     parser.add_argument("--extra-minimap2-args", default="")
@@ -689,7 +688,7 @@ def add_all_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--min-identity", type=float, default=0.75)
     parser.add_argument("--close-hit-fraction", type=float, default=0.98)
     parser.add_argument("--keep-paf", action="store_true")
-    parser.add_argument("--refs-dir", type=Path, default=hcv_cluster_prep.DEFAULT_REFS_DIR)
+    parser.add_argument("--refs-dir", type=Path, default=prep.DEFAULT_REFS_DIR)
     parser.add_argument("--reference-map", type=Path)
     parser.add_argument("--ncbi-email")
     parser.add_argument("--force-download", action="store_true")
@@ -736,11 +735,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if argv[0] == "genotype":
-        return assign_hcv_genotypes_from_fasta.main(argv[1:])
+        return genotyping.main(argv[1:])
     if argv[0] == "prep":
-        return hcv_cluster_prep.main(["prep-align", *argv[1:]])
+        return prep.main(["prep-align", *argv[1:]])
     if argv[0] == "prep-refs":
-        return hcv_cluster_prep.main(["prep-refs", *argv[1:]])
+        return prep.main(["prep-refs", *argv[1:]])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -748,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a subcommand is required")
     try:
         return args.func(args)
-    except (RuntimeError, ValueError, hcv_cluster_prep.HcvPrepError) as exc:
+    except (RuntimeError, ValueError, prep.HcvPrepError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

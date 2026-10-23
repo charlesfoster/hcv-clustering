@@ -7,8 +7,8 @@ these same functions in one process, and the Nextflow workflow calls them as sep
 processes, so the two cannot drift apart. No scientific logic belongs in the workflow
 definition: thresholds, region handling and sample bookkeeping are all decided here.
 
-Stage order (``genotype`` and ``align`` are the existing assign_hcv_genotypes_from_fasta.py
-and ``hcv_cluster_prep.py prep-align`` commands)::
+Stage order (``genotype`` and ``align`` are the existing genotyping.py
+and ``prep.py prep-align`` commands)::
 
     resolve-ids -> genotype -> align (per subtype) -> select-variants (per subtype)
         -> cluster (per subtype and method) -> merge -> label -> audit
@@ -24,13 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import hcv_cluster_audit
-import hcv_cluster_labels
-import hcv_cluster_metadata
-import hcv_cluster_methods
-import hcv_cluster_prep
-import hcv_cluster_variants
-import hcv_workflow
+from . import audit, labels, metadata, methods, prep, variants, workflow
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -54,14 +48,14 @@ def parse_labelled_paths(values: Sequence[str] | None) -> dict[str, Path]:
 
 def resolve_ids(
     input_path: Path, out_fasta: Path | None, out_variants: Path | None
-) -> tuple[list[hcv_cluster_prep.FastaRecord], hcv_cluster_variants.VariantPlan]:
+) -> tuple[list[prep.FastaRecord], variants.VariantPlan]:
     """Drop exact repeats and rename distinct same-ID sequences (mixed infections)."""
-    input_records = hcv_cluster_variants.read_input_records(input_path)
-    plan = hcv_cluster_variants.resolve_duplicate_ids(input_records)
+    input_records = variants.read_input_records(input_path)
+    plan = variants.resolve_duplicate_ids(input_records)
     if out_fasta is not None:
-        hcv_cluster_prep.write_fasta_records(plan.records, out_fasta)
+        prep.write_fasta_records(plan.records, out_fasta)
     if out_variants is not None:
-        hcv_cluster_variants.write_variants_csv(plan, out_variants)
+        variants.write_variants_csv(plan, out_variants)
     return input_records, plan
 
 
@@ -78,7 +72,7 @@ def plan_genotypes(
     A subtype without a configured reference is skipped, never fatal: one rare subtype
     must not discard every other subtype's results.
     """
-    genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
+    genotypes = workflow.detected_pass_genotypes(genotype_rows)
     if genotype_filter:
         genotypes = [g for g in genotypes if g in set(genotype_filter)]
     unsupported = {
@@ -113,7 +107,7 @@ def filter_genotype_fastas(
 
 
 def select_variants(
-    plan: hcv_cluster_variants.VariantPlan,
+    plan: variants.VariantPlan,
     genotype_rows: Sequence[Mapping[str, str]],
     genotype: str,
     qc_path: Path,
@@ -121,17 +115,17 @@ def select_variants(
     clustering_fasta: Path,
     out_fasta: Path | None = None,
     out_decisions: Path | None = None,
-) -> list[hcv_cluster_variants.VariantRecord]:
+) -> list[variants.VariantRecord]:
     """Keep one usable variant per sample within ``genotype``; return those dropped."""
-    hcv_cluster_variants.record_genotypes(plan, genotype_rows)
-    dropped = hcv_cluster_variants.select_same_genotype(plan, genotype, qc_path, mode)
+    variants.record_genotypes(plan, genotype_rows)
+    dropped = variants.select_same_genotype(plan, genotype, qc_path, mode)
     target = out_fasta or clustering_fasta
     if target != clustering_fasta:
         shutil.copyfile(clustering_fasta, target)
     if dropped:
-        hcv_cluster_variants.remove_from_fasta(target, {variant.sequence_id for variant in dropped})
+        variants.remove_from_fasta(target, {variant.sequence_id for variant in dropped})
     if out_decisions is not None:
-        hcv_cluster_variants.write_decisions(plan, genotype, out_decisions)
+        variants.write_decisions(plan, genotype, out_decisions)
     return dropped
 
 
@@ -169,7 +163,7 @@ def cluster_sequences(
             path.write_text(header)
         return links
     if method == "tn93":
-        rc = hcv_workflow.run_tn93(
+        rc = workflow.run_tn93(
             argparse.Namespace(
                 input=fasta,
                 output=out_distances,
@@ -185,20 +179,20 @@ def cluster_sequences(
         )
         if rc:
             raise RuntimeError(f"tn93 failed with exit code {rc}")
-        hcv_workflow.command_link(
+        workflow.command_link(
             argparse.Namespace(
                 distances=out_distances, output=out_links, threshold=threshold, include_self=False
             )
         )
     elif method == "snp":
-        detailed = hcv_cluster_methods.compute_snp_distances_detailed(fasta)
-        hcv_cluster_methods.write_snp_csv(out_distances, fasta, detailed)
-        links = hcv_cluster_methods.write_snp_links_csv(
+        detailed = methods.compute_snp_distances_detailed(fasta)
+        methods.write_snp_csv(out_distances, fasta, detailed)
+        links = methods.write_snp_links_csv(
             out_links, detailed, threshold=threshold, snp_count_threshold=snp_count_threshold
         )
     else:
         raise ValueError(f"Unknown clustering method: {method}")
-    hcv_workflow.command_cluster(
+    workflow.command_cluster(
         argparse.Namespace(links=out_links, output=out_clusters, nodes_fasta=fasta, nodes_file=None)
     )
     return links
@@ -215,19 +209,19 @@ def merge_tables(
     variants_csv: Path | None = None,
 ) -> None:
     """Merge per-subtype tables into genotype-qualified, run-wide ones."""
-    hcv_workflow.merge_cluster_tables(sorted(cluster_tables.items()), out_clusters)
-    hcv_workflow.merge_link_tables(sorted(link_tables.items()), out_links)
+    workflow.merge_cluster_tables(sorted(cluster_tables.items()), out_clusters)
+    workflow.merge_link_tables(sorted(link_tables.items()), out_links)
     annotate_clusters(out_clusters, variants_csv)
 
 
 def annotate_clusters(clusters_csv: Path, variants_csv: Path | None) -> None:
     """Add base_sample_id / mixed_infection (identity values when nothing was renamed)."""
     plan = (
-        hcv_cluster_variants.read_variants_csv(variants_csv)
+        variants.read_variants_csv(variants_csv)
         if variants_csv is not None
-        else hcv_cluster_variants.VariantPlan(records=[])
+        else variants.VariantPlan(records=[])
     )
-    hcv_cluster_variants.annotate_cluster_table(clusters_csv, plan)
+    variants.annotate_cluster_table(clusters_csv, plan)
 
 
 # --- label ------------------------------------------------------------------------------
@@ -247,8 +241,8 @@ def label_definition(
     """What a persistent label is valid for: changing any of this changes who clusters."""
     definition: dict[str, object] = {
         "metric": metric,
-        "region": hcv_cluster_methods.canonical_threshold_region(region),
-        "threshold": hcv_cluster_methods.resolve_threshold(region, threshold, distance=metric),
+        "region": methods.canonical_threshold_region(region),
+        "threshold": methods.resolve_threshold(region, threshold, distance=metric),
         "region_strategy": region_strategy,
     }
     if metric == "snp" and snp_count_threshold is not None:
@@ -277,15 +271,15 @@ def label_clusters(
     out_changes: Path,
     registry_out: Path | None = None,
     outdir_label: str = "",
-) -> hcv_cluster_labels.LabelResult:
+) -> labels.LabelResult:
     """Add the persistent ``cluster_label`` column and write label reports."""
     rows = read_csv_rows(clusters_csv)
     with clusters_csv.open(newline="", encoding="utf-8") as handle:
         fieldnames = list(csv.DictReader(handle).fieldnames or ())
-    base = hcv_cluster_variants.BASE_SAMPLE_FIELD
+    base = variants.BASE_SAMPLE_FIELD
     partition = {(row["genotype"], row.get(base) or row["sample_id"]): row["cluster_id"] for row in rows}
     now = datetime.datetime.now()
-    result, table, _registry = hcv_cluster_labels.label_run(
+    result, table, _registry = labels.label_run(
         registry,
         track,
         definition,
@@ -330,7 +324,7 @@ def label_clusters(
     else:
         print(
             f"{summary}. Registry NOT updated (read-only); new clusters are shown as "
-            f"{hcv_cluster_labels.UNASSIGNED}. Re-run with --update-registry to name them."
+            f"{labels.UNASSIGNED}. Re-run with --update-registry to name them."
         )
     return result
 
@@ -347,7 +341,7 @@ def derive_excluded_subtypes(
     """Subtypes that passed genotyping but were not analysed, with the reason."""
     excluded: dict[str, str] = {}
     requested = set(genotype_filter or ())
-    for genotype in hcv_workflow.detected_pass_genotypes(genotype_rows):
+    for genotype in workflow.detected_pass_genotypes(genotype_rows):
         if genotype in processed:
             continue
         if requested and genotype not in requested:
@@ -378,37 +372,37 @@ def write_sample_outputs(
     min_coverage: float,
     genotype_filter: Sequence[str] | None = None,
     reference_map: Path | None = None,
-) -> list[hcv_cluster_audit.SampleAudit]:
+) -> list[audit.SampleAudit]:
     """Write the sample audit, annotated metadata tables and labelled survivor FASTA.
 
     Reads everything from files, so it can run as its own pipeline step. Also used when a
     run stops early (nothing passed genotyping), when the explanation matters most.
     """
     qc = qc or {}
-    input_records = hcv_cluster_variants.read_input_records(input_fasta)
+    input_records = variants.read_input_records(input_fasta)
     resolved = (
-        hcv_cluster_prep.read_fasta_records(resolved_fasta)
+        prep.read_fasta_records(resolved_fasta)
         if resolved_fasta is not None and resolved_fasta.exists()
         else input_records
     )
     plan = (
-        hcv_cluster_variants.read_variants_csv(variants_csv, resolved)
+        variants.read_variants_csv(variants_csv, resolved)
         if variants_csv is not None
-        else hcv_cluster_variants.VariantPlan(records=list(resolved))
+        else variants.VariantPlan(records=list(resolved))
     )
-    genotype_rows = hcv_workflow.read_genotype_assignments(genotypes_csv)
-    hcv_cluster_variants.record_genotypes(plan, genotype_rows)
+    genotype_rows = workflow.read_genotype_assignments(genotypes_csv)
+    variants.record_genotypes(plan, genotype_rows)
     for path in (decisions or {}).values():
-        hcv_cluster_variants.apply_decisions(plan, path)
+        variants.apply_decisions(plan, path)
 
-    catalog = hcv_cluster_prep.load_reference_catalog(reference_map)
+    catalog = prep.load_reference_catalog(reference_map)
     excluded = derive_excluded_subtypes(genotype_rows, list(qc), genotype_filter, catalog)
     validation_failures = {
         genotype: {row["sample_id"]: row["reason"] for row in read_csv_rows(path)}
         for genotype, path in (validation or {}).items()
         if path.exists()
     }
-    audits = hcv_cluster_audit.build_audit(
+    audits = audit.build_audit(
         input_records,
         plan,
         genotype_rows,
@@ -416,24 +410,24 @@ def write_sample_outputs(
         min_identity=min_identity,
         min_coverage=min_coverage,
         excluded_subtypes=excluded,
-        qc_by_genotype={genotype: hcv_cluster_audit.read_qc_rows(path) for genotype, path in qc.items()},
+        qc_by_genotype={genotype: audit.read_qc_rows(path) for genotype, path in qc.items()},
         validation_failures=validation_failures,
         cluster_rows=read_csv_rows(clusters_csv) if clusters_csv is not None and clusters_csv.exists() else (),
     )
     outdir.mkdir(parents=True, exist_ok=True)
-    hcv_cluster_audit.write_audit_csv(audits, outdir / hcv_cluster_audit.AUDIT_FILENAME)
-    hcv_cluster_audit.write_metadata_tables(
+    audit.write_audit_csv(audits, outdir / audit.AUDIT_FILENAME)
+    audit.write_metadata_tables(
         audits,
         metadata_rows,
-        outdir / hcv_cluster_audit.METADATA_ALL_FILENAME,
-        outdir / hcv_cluster_audit.METADATA_SURVIVING_FILENAME,
+        outdir / audit.METADATA_ALL_FILENAME,
+        outdir / audit.METADATA_SURVIVING_FILENAME,
     )
-    hcv_cluster_audit.write_surviving_fasta(
-        audits, plan.records, outdir / hcv_cluster_audit.SURVIVING_FASTA_FILENAME
+    audit.write_surviving_fasta(
+        audits, plan.records, outdir / audit.SURVIVING_FASTA_FILENAME
     )
     if plan.has_duplicates:
-        hcv_cluster_variants.write_variants_csv(plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME)
-    print(f"Sample audit: {hcv_cluster_audit.summarize(audits)} ({hcv_cluster_audit.AUDIT_FILENAME})")
+        variants.write_variants_csv(plan, outdir / variants.VARIANTS_FILENAME)
+    print(f"Sample audit: {audit.summarize(audits)} ({audit.AUDIT_FILENAME})")
     absent = sorted(
         {str(row["sample_id"]) for row in metadata_rows}.difference(a.base_sample_id for a in audits)
     )
@@ -450,7 +444,7 @@ def write_sample_outputs(
 
 
 def _load_metadata(path: Path | None) -> list[dict[str, Any]]:
-    return hcv_cluster_metadata.load_metadata_csv(path) if path is not None else []
+    return metadata.load_metadata_csv(path) if path is not None else []
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -480,7 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--genotype", required=True)
     p.add_argument("--qc", type=Path, required=True)
     p.add_argument("--clustering-fasta", type=Path, required=True)
-    p.add_argument("--mode", choices=hcv_cluster_variants.SELECTION_MODES, default="region-coverage")
+    p.add_argument("--mode", choices=variants.SELECTION_MODES, default="region-coverage")
     p.add_argument("--out-fasta", type=Path, required=True)
     p.add_argument("--out-decisions", type=Path, required=True)
     p.set_defaults(func=_cmd_select_variants)
@@ -532,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-overlap", type=int, default=None)
     p.add_argument("--extra-tn93-args", default="")
     p.add_argument("--snp-count-threshold", type=int, default=None)
-    p.add_argument("--label-prefix", default=hcv_cluster_labels.DEFAULT_PREFIX)
+    p.add_argument("--label-prefix", default=labels.DEFAULT_PREFIX)
     p.add_argument("--label-date", default=None)
     p.add_argument("--out-clusters", type=Path, required=True)
     p.add_argument("--out-labels", type=Path, default=Path("cluster_labels.csv"))
@@ -572,9 +566,9 @@ def _cmd_resolve_ids(args: argparse.Namespace) -> int:
 
 def _cmd_plan_genotypes(args: argparse.Namespace) -> int:
     runnable, unsupported = plan_genotypes(
-        hcv_workflow.read_genotype_assignments(args.genotypes),
+        workflow.read_genotype_assignments(args.genotypes),
         args.genotype,
-        hcv_cluster_prep.load_reference_catalog(args.reference_map),
+        prep.load_reference_catalog(args.reference_map),
     )
     warn_unsupported(unsupported)
     filter_genotype_fastas(runnable, args.fasta_dir, args.skipped_dir)
@@ -583,10 +577,10 @@ def _cmd_plan_genotypes(args: argparse.Namespace) -> int:
 
 
 def _cmd_select_variants(args: argparse.Namespace) -> int:
-    plan = hcv_cluster_variants.read_variants_csv(args.variants)
+    plan = variants.read_variants_csv(args.variants)
     dropped = select_variants(
         plan,
-        hcv_workflow.read_genotype_assignments(args.genotypes),
+        workflow.read_genotype_assignments(args.genotypes),
         args.genotype,
         args.qc,
         args.mode,
@@ -600,7 +594,7 @@ def _cmd_select_variants(args: argparse.Namespace) -> int:
 
 
 def _cmd_cluster(args: argparse.Namespace) -> int:
-    threshold = hcv_cluster_methods.resolve_threshold(args.region, args.threshold, distance=args.method)
+    threshold = methods.resolve_threshold(args.region, args.threshold, distance=args.method)
     cluster_sequences(
         args.method,
         args.input,
@@ -694,7 +688,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (RuntimeError, ValueError, hcv_cluster_prep.HcvPrepError) as exc:
+    except (RuntimeError, ValueError, prep.HcvPrepError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-import hcv_cluster_prep
+from hcv_cluster import prep
 
 
 @pytest.mark.parametrize(
@@ -16,25 +16,25 @@ import hcv_cluster_prep
     ],
 )
 def test_mask_n_as_gap(sequence: str, expected: str) -> None:
-    assert hcv_cluster_prep.mask_n_as_gap(sequence) == expected
+    assert prep.mask_n_as_gap(sequence) == expected
 
 
 def test_write_outputs_masks_n_in_clustering_fasta_but_not_aligned_fasta(tmp_path: Path) -> None:
     reference_aligned = "AAAAAAAAAA"
     query_alignment = {"sample1": "ACGTNNGTAC"}
     extracted = {"sample1": "ACGTNNGTAC"}
-    selection = hcv_cluster_prep.RegionSelection(
+    selection = prep.RegionSelection(
         expression="core-e2-nohvr1",
         strategy="fixed",
-        segments=(hcv_cluster_prep.RegionSegment("region", 1, 10, "test", ""),),
+        segments=(prep.RegionSegment("region", 1, 10, "test", ""),),
     )
-    spec = hcv_cluster_prep.ReferenceSpec(genotype="1a", accession="TEST.1")
+    spec = prep.ReferenceSpec(genotype="1a", accession="TEST.1")
     out_prefix = tmp_path / "prep"
 
     import logging
 
-    hcv_cluster_prep.write_outputs(
-        records=[hcv_cluster_prep.FastaRecord("sample1", "ACGTNNGTAC")],
+    prep.write_outputs(
+        records=[prep.FastaRecord("sample1", "ACGTNNGTAC")],
         query_alignment=query_alignment,
         reference_aligned=reference_aligned,
         extracted=extracted,

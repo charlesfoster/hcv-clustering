@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Streamlit GUI for HCV genomic clustering. Thin wrapper around hcv_cluster.command_run."""
+"""Streamlit GUI for HCV genomic clustering. Thin wrapper around cli.command_run."""
 
 from __future__ import annotations
 
@@ -18,13 +18,8 @@ from typing import Any
 
 import streamlit as st
 
-import assign_hcv_genotypes_from_fasta
-import hcv_cluster
-import hcv_cluster_metadata
-import hcv_cluster_prep
-import hcv_cluster_viz
+from . import cli, genotyping, metadata, prep, viz
 
-st.set_page_config(page_title="HCV Clustering", layout="wide")
 
 REGION_PRESETS_UI = (
     ("e1-e2", "E1–E2, full (default)"),
@@ -58,7 +53,7 @@ def _region_picker() -> tuple[str, str | None]:
             "specific reference's annotations."
         ),
     )
-    region_error = hcv_cluster_prep.validate_region_syntax(region) if region.strip() else "Region expression cannot be empty"
+    region_error = prep.validate_region_syntax(region) if region.strip() else "Region expression cannot be empty"
     if region_error:
         st.error(region_error)
     return region, region_error
@@ -74,19 +69,19 @@ def _validate_metadata_upload(data: bytes) -> list[dict[str, Any]]:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise hcv_cluster_metadata.MetadataValidationError(
+        raise metadata.MetadataValidationError(
             "Metadata CSV must be UTF-8 encoded"
         ) from exc
     try:
         reader = csv.DictReader(io.StringIO(text))
         original_fields = reader.fieldnames
         if original_fields is None:
-            raise hcv_cluster_metadata.MetadataValidationError("Metadata CSV has no header row")
+            raise metadata.MetadataValidationError("Metadata CSV has no header row")
         cleaned_fields = [field.strip() for field in original_fields]
         source_rows = []
         for row_number, row in enumerate(reader, start=2):
             if None in row:
-                raise hcv_cluster_metadata.MetadataValidationError(
+                raise metadata.MetadataValidationError(
                     f"Metadata row {row_number} has more values than the header"
                 )
             source_rows.append(
@@ -96,10 +91,10 @@ def _validate_metadata_upload(data: bytes) -> list[dict[str, Any]]:
                 }
             )
     except csv.Error as exc:
-        raise hcv_cluster_metadata.MetadataValidationError(
+        raise metadata.MetadataValidationError(
             f"Could not parse metadata CSV: {exc}"
         ) from exc
-    return hcv_cluster_metadata.normalize_metadata_rows(
+    return metadata.normalize_metadata_rows(
         source_rows, fieldnames=cleaned_fields
     )
 
@@ -150,7 +145,7 @@ def _size_display_fields(
             str(row.get(field, "")).strip()
             for row in node_rows
             if str(row.get(field, "")).strip()
-            not in {"", hcv_cluster_metadata.MISSING_VALUE}
+            not in {"", metadata.MISSING_VALUE}
         ]
         if field.casefold().replace(" ", "_") == "age_range":
             result.append(field)
@@ -177,10 +172,10 @@ def _epidemiology_defaults(
             if field in ordered_size_fields and field.casefold().replace(" ", "_") != "age_range":
                 continue
             values = {
-                str(row.get(field) or hcv_cluster_metadata.MISSING_VALUE)
+                str(row.get(field) or metadata.MISSING_VALUE)
                 for row in node_rows
             }
-            values.discard(hcv_cluster_metadata.MISSING_VALUE)
+            values.discard(metadata.MISSING_VALUE)
             if field not in excluding and 1 < len(values) <= 8:
                 return field
         return None
@@ -214,7 +209,7 @@ def _figure_svg_bytes(figure: Any) -> bytes:
     """Use the shared vector-safety check and return data for Streamlit download."""
     with tempfile.TemporaryDirectory(prefix="hcv-cluster-svg-") as temp_dir:
         svg_path = Path(temp_dir) / "network.svg"
-        hcv_cluster_viz.export_figure_svg(figure, svg_path)
+        viz.export_figure_svg(figure, svg_path)
         return svg_path.read_bytes()
 
 
@@ -260,11 +255,11 @@ def _run_tab() -> None:
     if uploaded_metadata is not None:
         try:
             metadata_preview = _validate_metadata_upload(uploaded_metadata.getvalue())
-        except hcv_cluster_metadata.MetadataValidationError as exc:
+        except metadata.MetadataValidationError as exc:
             metadata_error = str(exc)
             st.error(f"Metadata CSV is not valid: {metadata_error}")
         else:
-            metadata_fields = hcv_cluster_metadata.metadata_fields(metadata_preview)
+            metadata_fields = metadata.metadata_fields(metadata_preview)
             st.success(
                 f"Metadata ready: {len(metadata_preview)} sample(s), "
                 f"{len(metadata_fields)} field(s)."
@@ -297,8 +292,8 @@ def _run_tab() -> None:
     with col1:
         distance = st.selectbox("Distance metric", ("tn93", "snp", "both"), index=0)
     with col2:
-        default_threshold_tn93 = hcv_cluster.resolve_threshold(region, None, distance="tn93")
-        default_threshold_snp = hcv_cluster.resolve_threshold(region, None, distance="snp")
+        default_threshold_tn93 = cli.resolve_threshold(region, None, distance="tn93")
+        default_threshold_snp = cli.resolve_threshold(region, None, distance="snp")
         default_threshold = default_threshold_snp if distance == "snp" else default_threshold_tn93
         override_threshold = st.checkbox("Override default threshold")
         if override_threshold:
@@ -307,8 +302,8 @@ def _run_tab() -> None:
             )
         else:
             threshold = None
-            provisional = not hcv_cluster.region_threshold_is_evidence_based(region)
-            explicit = hcv_cluster.region_threshold_is_explicit(region)
+            provisional = not cli.region_threshold_is_evidence_based(region)
+            explicit = cli.region_threshold_is_explicit(region)
             if distance == "both" and default_threshold_tn93 != default_threshold_snp:
                 st.caption(
                     f"Default for '{region}': TN93 **{default_threshold_tn93:.4g}**, "
@@ -441,14 +436,14 @@ def _run_tab() -> None:
             refs_dir = Path(
                 st.text_input(
                     "References cache dir",
-                    value=str(hcv_cluster_prep.DEFAULT_REFS_DIR),
+                    value=str(prep.DEFAULT_REFS_DIR),
                     help="Directory where downloaded GenBank/FASTA reference records are cached and reused across runs, so they aren't re-downloaded every time.",
                 )
             )
             panel_fasta = Path(
                 st.text_input(
                     "Genotyping panel FASTA",
-                    value=str(assign_hcv_genotypes_from_fasta.DEFAULT_PANEL),
+                    value=str(genotyping.DEFAULT_PANEL),
                     help="Reference panel used for the initial competitive-alignment genotyping step (minimap2 against every sequence in this file).",
                 )
             )
@@ -565,7 +560,7 @@ def _run_tab() -> None:
             if metadata_path is not None:
                 argv.extend(["--metadata", str(metadata_path)])
 
-            parser = hcv_cluster.build_parser()
+            parser = cli.build_parser()
             args = parser.parse_args(argv)
 
             log_buffer = io.StringIO()
@@ -573,7 +568,7 @@ def _run_tab() -> None:
                 try:
                     with contextlib.redirect_stdout(log_buffer):
                         rc = args.func(args)
-                except (RuntimeError, ValueError, hcv_cluster_prep.HcvPrepError) as exc:
+                except (RuntimeError, ValueError, prep.HcvPrepError) as exc:
                     rc = 1
                     log_buffer.write(f"ERROR: {exc}\n")
 
@@ -671,11 +666,11 @@ def _render_results(outdir: Path, distance: str) -> None:
     if not (distance == "both" and view["metric"] == "snp"):
         # Persistent labels belong to the primary metric's merged table; per-genotype
         # tables borrow them from it.
-        node_rows = hcv_cluster_viz.apply_persistent_labels(
-            node_rows, hcv_cluster_viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
+        node_rows = viz.apply_persistent_labels(
+            node_rows, viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
         )
     else:
-        node_rows = hcv_cluster_viz.apply_persistent_labels(node_rows)
+        node_rows = viz.apply_persistent_labels(node_rows)
 
     if scope != "All genotypes":
         for row in node_rows:
@@ -685,9 +680,9 @@ def _render_results(outdir: Path, distance: str) -> None:
     metadata_path = outdir / "metadata.csv"
     if metadata_path.exists():
         try:
-            metadata_rows = hcv_cluster_metadata.load_metadata_csv(metadata_path)
-            node_rows, join_report = hcv_cluster_metadata.join_metadata(node_rows, metadata_rows)
-        except hcv_cluster_metadata.MetadataValidationError as exc:
+            metadata_rows = metadata.load_metadata_csv(metadata_path)
+            node_rows, join_report = metadata.join_metadata(node_rows, metadata_rows)
+        except metadata.MetadataValidationError as exc:
             st.error(
                 f"Could not apply saved metadata ({metadata_path}): {exc}. "
                 "Correct the source CSV and rerun clustering."
@@ -698,7 +693,7 @@ def _render_results(outdir: Path, distance: str) -> None:
             suffix = "…" if len(join_report.missing_metadata_sample_ids) > 8 else ""
             st.warning(
                 f"{len(join_report.missing_metadata_sample_ids)} plotted sample(s) have no "
-                f"metadata and are shown as {hcv_cluster_metadata.MISSING_VALUE}: {preview}{suffix}"
+                f"metadata and are shown as {metadata.MISSING_VALUE}: {preview}{suffix}"
             )
         if scope == "All genotypes" and join_report.unknown_metadata_sample_ids:
             preview = ", ".join(join_report.unknown_metadata_sample_ids[:8])
@@ -724,7 +719,7 @@ def _render_results(outdir: Path, distance: str) -> None:
             ),
         )
     plot_node_rows, plot_edge_rows = (
-        hcv_cluster_viz.filter_singletons(node_rows, edge_rows) if hide_singletons else (node_rows, edge_rows)
+        viz.filter_singletons(node_rows, edge_rows) if hide_singletons else (node_rows, edge_rows)
     )
     if not plot_node_rows:
         st.info("No multi-member clusters for this scope/metric.")
@@ -871,7 +866,7 @@ def _render_results(outdir: Path, distance: str) -> None:
     )
 
     if display_mode == "Composite nodes":
-        encoding_warnings = hcv_cluster_viz.get_encoding_warnings(
+        encoding_warnings = viz.get_encoding_warnings(
             plot_node_rows,
             color_by=color_by,
             symbol_by=symbol_by,
@@ -883,7 +878,7 @@ def _render_results(outdir: Path, distance: str) -> None:
         encoding_warnings = [
             warning
             for field in small_multiple_fields
-            for warning in hcv_cluster_viz.get_encoding_warnings(
+            for warning in viz.get_encoding_warnings(
                 plot_node_rows, color_by=field
             )
         ]
@@ -893,9 +888,9 @@ def _render_results(outdir: Path, distance: str) -> None:
     # Build maps from the complete saved metadata/root-node universe, not only the
     # currently selected genotype. This keeps (for example) Prison A the same colour
     # while users switch repeatedly between combined and per-genotype views.
-    metadata_field_names = set(hcv_cluster_metadata.metadata_fields(metadata_rows))
+    metadata_field_names = set(metadata.metadata_fields(metadata_rows))
     all_genotype_rows = (
-        hcv_cluster_viz.apply_persistent_labels(_read_csv_rows(outdir / "clusters.csv"))
+        viz.apply_persistent_labels(_read_csv_rows(outdir / "clusters.csv"))
         if (outdir / "clusters.csv").exists()
         else []
     )
@@ -915,7 +910,7 @@ def _render_results(outdir: Path, distance: str) -> None:
             values.extend(row.get(field) for row in metadata_rows)
         if field == "genotype":
             values.extend(row.get("genotype") for row in all_genotype_rows)
-        encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
+        encoding_maps[f"{channel}:{field}"] = viz.build_category_mapping(
             values, channel=channel
         )
 
@@ -936,7 +931,7 @@ def _render_results(outdir: Path, distance: str) -> None:
     )
     layout_cache = st.session_state.setdefault("network_layout_cache", {})
     if cache_key not in layout_cache:
-        layout_cache[cache_key] = hcv_cluster_viz.compute_network_layout(
+        layout_cache[cache_key] = viz.compute_network_layout(
             plot_node_rows,
             plot_edge_rows,
             mode=layout_mode,
@@ -952,7 +947,7 @@ def _render_results(outdir: Path, distance: str) -> None:
     with st.spinner("Building network..."):
         try:
             if display_mode == "Small multiples":
-                fig = hcv_cluster_viz.build_small_multiples_figure(
+                fig = viz.build_small_multiples_figure(
                     plot_node_rows,
                     plot_edge_rows,
                     small_multiple_fields,
@@ -962,7 +957,7 @@ def _render_results(outdir: Path, distance: str) -> None:
                     show_cluster_labels=show_cluster_labels,
                 )
             else:
-                fig = hcv_cluster_viz.build_network_figure(
+                fig = viz.build_network_figure(
                     plot_node_rows,
                     plot_edge_rows,
                     positions=layout_cache[cache_key],
@@ -1024,7 +1019,7 @@ def _refs_tab() -> None:
     st.caption("Downloads and caches GenBank reference records used for alignment. Run once before the first clustering run.")
 
     genotype = st.text_input("Genotype to prepare, or 'all'", value="all")
-    refs_dir = Path(st.text_input("References cache dir", value=str(hcv_cluster_prep.DEFAULT_REFS_DIR), key="refs_tab_dir"))
+    refs_dir = Path(st.text_input("References cache dir", value=str(prep.DEFAULT_REFS_DIR), key="refs_tab_dir"))
     ncbi_email = st.text_input("NCBI email", value="", key="refs_tab_email")
     force_download = st.checkbox("Force re-download", key="refs_tab_force")
     verbose = st.checkbox("Verbose logging", key="refs_tab_verbose")
@@ -1040,7 +1035,7 @@ def _refs_tab() -> None:
     if verbose:
         argv.append("--verbose")
 
-    parser = hcv_cluster.build_parser()
+    parser = cli.build_parser()
     args = parser.parse_args(argv)
 
     log_buffer = io.StringIO()
@@ -1048,7 +1043,7 @@ def _refs_tab() -> None:
         try:
             with contextlib.redirect_stdout(log_buffer):
                 rc = args.func(args)
-        except (RuntimeError, ValueError, hcv_cluster_prep.HcvPrepError) as exc:
+        except (RuntimeError, ValueError, prep.HcvPrepError) as exc:
             rc = 1
             log_buffer.write(f"ERROR: {exc}\n")
 
@@ -1086,11 +1081,14 @@ def _server_sidebar() -> None:
                 st.rerun()
 
 
-st.title("HCV Genomic Clustering")
-_server_sidebar()
+def main() -> None:
+    """Build the page. Called on every Streamlit rerun by streamlit_app.py."""
+    st.set_page_config(page_title="HCV Clustering", layout="wide")
+    st.title("HCV Genomic Clustering")
+    _server_sidebar()
 
-run_tab, refs_tab = st.tabs(["Run clustering", "Cache references"])
-with run_tab:
-    _run_tab()
-with refs_tab:
-    _refs_tab()
+    run_tab, refs_tab = st.tabs(["Run clustering", "Cache references"])
+    with run_tab:
+        _run_tab()
+    with refs_tab:
+        _refs_tab()

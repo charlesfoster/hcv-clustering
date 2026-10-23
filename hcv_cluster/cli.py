@@ -13,18 +13,10 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import assign_hcv_genotypes_from_fasta
-import hcv_cluster_audit
-import hcv_cluster_labels
-import hcv_cluster_metadata
-import hcv_cluster_prep
-import hcv_cluster_stages
-import hcv_cluster_variants
-import hcv_cluster_viz
-import hcv_workflow
+from . import audit, genotyping, labels, metadata, prep, stages, variants, viz, workflow
 
 
-from hcv_cluster_methods import (  # noqa: F401  (re-exported for existing callers)
+from .methods import (  # noqa: F401  (re-exported for existing callers)
     REGION_THRESHOLDS_TN93,
     REGION_THRESHOLDS_SNP,
     EVIDENCE_ANCHORED_REGIONS_TN93,
@@ -90,8 +82,8 @@ _PLOT_BUILTIN_FIELDS = frozenset(
         "cluster_id",
         "source_cluster_id",
         "cluster_size",
-        hcv_cluster_variants.BASE_SAMPLE_FIELD,
-        hcv_cluster_variants.MIXED_INFECTION_FIELD,
+        variants.BASE_SAMPLE_FIELD,
+        variants.MIXED_INFECTION_FIELD,
     }
 )
 
@@ -119,7 +111,7 @@ def _validate_plot_fields(
     metadata_rows: Sequence[Mapping[str, Any]],
 ) -> None:
     requested = set(_requested_plot_fields(args))
-    available = _PLOT_BUILTIN_FIELDS | set(hcv_cluster_metadata.metadata_fields(metadata_rows))
+    available = _PLOT_BUILTIN_FIELDS | set(metadata.metadata_fields(metadata_rows))
     unknown = sorted(requested.difference(available))
     if unknown:
         available_text = ", ".join(sorted(available))
@@ -157,7 +149,7 @@ def _prepare_plot_rows(
     metadata_rows: Sequence[Mapping[str, Any]],
     cluster_labels: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    node_rows: list[dict[str, Any]] = hcv_cluster_viz.apply_persistent_labels(
+    node_rows: list[dict[str, Any]] = viz.apply_persistent_labels(
         _read_csv_rows(clusters_csv), cluster_labels
     )
     edge_rows: list[dict[str, Any]] = _read_csv_rows(links_csv)
@@ -166,9 +158,9 @@ def _prepare_plot_rows(
             row.setdefault("genotype", genotype)
             row.setdefault("source_cluster_id", row.get("cluster_id", ""))
     if hide_singletons:
-        node_rows, edge_rows = hcv_cluster_viz.filter_singletons(node_rows, edge_rows)
+        node_rows, edge_rows = viz.filter_singletons(node_rows, edge_rows)
     if metadata_rows:
-        node_rows, _report = hcv_cluster_metadata.join_metadata(node_rows, metadata_rows)
+        node_rows, _report = metadata.join_metadata(node_rows, metadata_rows)
     return node_rows, edge_rows
 
 
@@ -216,7 +208,7 @@ def _render_cluster_plot(
         requested_hover_list.insert(0, "genotype")
     requested_hover = tuple(requested_hover_list)
     if small_multiple_fields:
-        fig = hcv_cluster_viz.build_small_multiples_figure(
+        fig = viz.build_small_multiples_figure(
             node_rows,
             edge_rows,
             small_multiple_fields,
@@ -227,7 +219,7 @@ def _render_cluster_plot(
             encoding_maps=encoding_maps,
         )
     else:
-        fig = hcv_cluster_viz.build_network_figure(
+        fig = viz.build_network_figure(
             node_rows,
             edge_rows,
             layout_mode=layout_mode,
@@ -254,7 +246,7 @@ def _render_cluster_plot(
             print(f"WARNING: could not export HTML network plot for {output_dir.name}: {exc}")
     if plot_network in ("svg", "all"):
         try:
-            hcv_cluster_viz.export_figure_svg(fig, output_dir / f"{file_prefix}network.svg")
+            viz.export_figure_svg(fig, output_dir / f"{file_prefix}network.svg")
         except Exception as exc:
             print(f"WARNING: could not export SVG network plot for {output_dir.name}: {exc}")
 
@@ -273,7 +265,7 @@ def _warn_plot_metadata(
     args: argparse.Namespace,
 ) -> None:
     if metadata_rows:
-        node_ids = {hcv_cluster_metadata.metadata_key(row) for row in node_rows}
+        node_ids = {metadata.metadata_key(row) for row in node_rows}
         metadata_ids = {str(row["sample_id"]) for row in metadata_rows}
         missing = sorted(node_ids.difference(metadata_ids))
         unknown = sorted(metadata_ids.difference(node_ids))
@@ -289,7 +281,7 @@ def _warn_plot_metadata(
                 f"the plotted networks: {_summarize_ids(unknown)}",
                 file=sys.stderr,
             )
-    warnings = hcv_cluster_viz.get_encoding_warnings(
+    warnings = viz.get_encoding_warnings(
         node_rows,
         color_by=args.plot_color_by,
         symbol_by=args.plot_symbol_by,
@@ -300,7 +292,7 @@ def _warn_plot_metadata(
     )
     for field in args.plot_small_multiple_field or ():
         warnings.extend(
-            hcv_cluster_viz.get_encoding_warnings(node_rows, color_by=field)
+            viz.get_encoding_warnings(node_rows, color_by=field)
         )
     for warning in dict.fromkeys(warnings):
         print(f"WARNING: {warning}", file=sys.stderr)
@@ -309,7 +301,7 @@ def _warn_plot_metadata(
 def _validate_plot_encodings(
     node_rows: Sequence[Mapping[str, Any]], args: argparse.Namespace
 ) -> None:
-    warnings = hcv_cluster_viz.get_encoding_warnings(
+    warnings = viz.get_encoding_warnings(
         node_rows,
         color_by=args.plot_color_by,
         symbol_by=args.plot_symbol_by,
@@ -358,7 +350,7 @@ def _render_requested_plots(
 
     # Persistent labels are tracked for the primary metric only; its per-genotype tables
     # carry no label column, so they borrow the labels from the merged table.
-    primary_labels = hcv_cluster_viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
+    primary_labels = viz.persistent_label_map(_read_csv_rows(outdir / "clusters.csv"))
 
     # Build mappings from the union of every plotted metric so categories keep the
     # same colour/shape/outline as users switch plots.
@@ -386,17 +378,17 @@ def _render_requested_plots(
         ("center", args.plot_center_by),
     ):
         if field:
-            encoding_maps[f"{channel}:{field}"] = hcv_cluster_viz.build_category_mapping(
+            encoding_maps[f"{channel}:{field}"] = viz.build_category_mapping(
                 (row.get(field) for row in union_nodes), channel=channel
             )
     for field in args.plot_small_multiple_field or ():
-        encoding_maps[f"color:{field}"] = hcv_cluster_viz.build_category_mapping(
+        encoding_maps[f"color:{field}"] = viz.build_category_mapping(
             (row.get(field) for row in union_nodes), channel="color"
         )
     effective_hover_fields = (
         tuple(args.plot_hover_field)
         if args.plot_hover_field is not None
-        else hcv_cluster_metadata.metadata_fields(metadata_rows)
+        else metadata.metadata_fields(metadata_rows)
     )
     render_options = {
         "metadata_rows": metadata_rows,
@@ -416,7 +408,7 @@ def _render_requested_plots(
         if args.plot_scope in ("per-genotype", "both"):
             links_by_genotype = dict(per_gt_links)
             for genotype, clusters_path in per_gt_clusters:
-                genotype_dir = outdir / "by_genotype" / hcv_workflow.safe_genotype_name(genotype)
+                genotype_dir = outdir / "by_genotype" / workflow.safe_genotype_name(genotype)
                 _render_cluster_plot(
                     args.plot_network,
                     args.plot_hide_singletons,
@@ -448,7 +440,7 @@ def _label_track(args: argparse.Namespace) -> str:
 
 
 def _label_definition(args: argparse.Namespace) -> dict[str, object]:
-    return hcv_cluster_stages.label_definition(
+    return stages.label_definition(
         _label_track(args),
         args.region,
         args.threshold,
@@ -471,14 +463,14 @@ def _check_label_options(args: argparse.Namespace) -> None:
         except ValueError:
             raise ValueError(f"--label-date must be YYYY-MM-DD, got {args.label_date!r}") from None
     if args.registry is not None and args.registry.is_dir():
-        hcv_cluster_labels.load_registry(args.registry).check_definition(
+        labels.load_registry(args.registry).check_definition(
             _label_track(args), _label_definition(args)
         )
 
 
 def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: Path) -> None:
     """Add persistent ``cluster_label`` to the merged cluster table and write label reports."""
-    hcv_cluster_stages.label_clusters(
+    stages.label_clusters(
         clusters_csv,
         registry=args.registry,
         update_registry=args.update_registry,
@@ -505,11 +497,11 @@ def _write_sample_outputs(
     """Run the audit stage over the files this run wrote (same code the workflow uses)."""
     by_genotype = outdir / "by_genotype"
     paths = {
-        gt: by_genotype / hcv_workflow.safe_genotype_name(gt) for gt in genotypes
+        gt: by_genotype / workflow.safe_genotype_name(gt) for gt in genotypes
     }
-    variants_csv = outdir / hcv_cluster_variants.VARIANTS_FILENAME
+    variants_csv = outdir / variants.VARIANTS_FILENAME
     resolved = outdir / "input.variants_resolved.fasta"
-    hcv_cluster_stages.write_sample_outputs(
+    stages.write_sample_outputs(
         outdir,
         input_fasta=input_path,
         genotypes_csv=outdir / "genotypes.csv",
@@ -534,29 +526,29 @@ def command_run(args: argparse.Namespace) -> int:
     genotype_fasta_dir = outdir / "genotype_fastas"
     genotype_csv = outdir / "genotypes.csv"
     metadata_rows = (
-        hcv_cluster_metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
+        metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
     )
     _validate_plot_fields(args, metadata_rows)
     _check_label_options(args)
 
     if args.dry_run:
         genotype_argv_display = [
-            "assign_hcv_genotypes_from_fasta",
+            "genotyping",
             "--input", str(input_path),
             "--output-csv", str(genotype_csv),
             "--outdir", str(genotype_fasta_dir),
             "--write-genotype-fastas",
         ]
-        print(hcv_workflow.shell_join(genotype_argv_display))
+        print(workflow.shell_join(genotype_argv_display))
         genotype_hint = args.genotype or ["<each detected pass genotype>"]
         for genotype in genotype_hint:
-            genotype_dir = outdir / "by_genotype" / hcv_workflow.safe_genotype_name(genotype)
+            genotype_dir = outdir / "by_genotype" / workflow.safe_genotype_name(genotype)
             prefix = genotype_dir / "prep"
             genotype_fasta = genotype_fasta_dir / f"hcv_{genotype}.fasta"
             clustering_fasta = Path(f"{prefix}.clustering.fasta")
             threshold = resolve_threshold(args.region, args.threshold)
             prep_cmd = [
-                "hcv_cluster_prep", "prep-align",
+                "prep", "prep-align",
                 "--input", str(genotype_fasta),
                 "--genotype", genotype,
                 "--out-prefix", str(prefix),
@@ -565,7 +557,7 @@ def command_run(args: argparse.Namespace) -> int:
                 cached_prefix = (
                     args.reuse_alignments
                     / "by_genotype"
-                    / hcv_workflow.safe_genotype_name(genotype)
+                    / workflow.safe_genotype_name(genotype)
                     / "prep"
                 )
                 cached_alignment = Path(f"{cached_prefix}.aligned.fasta")
@@ -573,12 +565,12 @@ def command_run(args: argparse.Namespace) -> int:
                 # same existence check, and prep-align errors on a missing cache file.
                 if cached_alignment.exists():
                     prep_cmd.extend(["--cached-alignment", str(cached_alignment)])
-            print(hcv_workflow.shell_join(prep_cmd))
+            print(workflow.shell_join(prep_cmd))
             if args.distance in ("tn93", "both"):
                 tn93_csv = genotype_dir / "tn93.csv"
                 tn93_cmd = [
                     args.tn93,
-                    *hcv_workflow.shell_split(args.extra_tn93_args),
+                    *workflow.shell_split(args.extra_tn93_args),
                     "-t", str(threshold),
                     "-a", args.ambiguities,
                 ]
@@ -587,10 +579,10 @@ def command_run(args: argparse.Namespace) -> int:
                 if args.min_overlap is not None:
                     tn93_cmd.extend(["-l", str(args.min_overlap)])
                 tn93_cmd.extend(["-o", str(tn93_csv), str(clustering_fasta)])
-                print(hcv_workflow.shell_join(tn93_cmd))
+                print(workflow.shell_join(tn93_cmd))
             if args.distance in ("snp", "both"):
                 snp_csv = genotype_dir / "snp.csv"
-                print(hcv_workflow.shell_join(["write_snp_csv", str(snp_csv), str(clustering_fasta)]))
+                print(workflow.shell_join(["write_snp_csv", str(snp_csv), str(clustering_fasta)]))
         return 0
 
     if args.reuse_alignments and not args.reuse_alignments.is_dir():
@@ -600,24 +592,24 @@ def command_run(args: argparse.Namespace) -> int:
 
     outdir.mkdir(parents=True, exist_ok=True)
     if args.metadata is not None:
-        hcv_cluster_metadata.write_metadata_csv(metadata_rows, outdir / "metadata.csv")
+        metadata.write_metadata_csv(metadata_rows, outdir / "metadata.csv")
     suppress = _quiet_logging if not args.verbose else contextlib.nullcontext
 
     # --- Repeated FASTA IDs (e.g. mixed infections) ---
-    _input_records, variant_plan = hcv_cluster_stages.resolve_ids(input_path, None, None)
+    _input_records, variant_plan = stages.resolve_ids(input_path, None, None)
     genotype_input = input_path
     if variant_plan.has_duplicates:
         genotype_input = outdir / "input.variants_resolved.fasta"
-        hcv_cluster_prep.write_fasta_records(variant_plan.records, genotype_input)
-        hcv_cluster_variants.write_variants_csv(variant_plan, outdir / hcv_cluster_variants.VARIANTS_FILENAME)
+        prep.write_fasta_records(variant_plan.records, genotype_input)
+        variants.write_variants_csv(variant_plan, outdir / variants.VARIANTS_FILENAME)
         repeats = sum(1 for v in variant_plan.variants if v.status == "dropped_identical_repeat")
         mixed = variant_plan.mixed_sample_ids()
         print(
             f"NOTE: repeated FASTA IDs found. {len(mixed)} sample(s) have distinct sequences "
-            f"(renamed ID{hcv_cluster_variants.VARIANT_SEPARATOR}1, "
-            f"ID{hcv_cluster_variants.VARIANT_SEPARATOR}2, ...); {repeats} identical repeat(s) dropped. "
+            f"(renamed ID{variants.VARIANT_SEPARATOR}1, "
+            f"ID{variants.VARIANT_SEPARATOR}2, ...); {repeats} identical repeat(s) dropped. "
             f"Same-genotype variants are reduced to one per sample by {args.duplicate_selection}. "
-            f"Details: {hcv_cluster_variants.VARIANTS_FILENAME}"
+            f"Details: {variants.VARIANTS_FILENAME}"
         )
 
     # --- Genotyping ---
@@ -640,16 +632,16 @@ def command_run(args: argparse.Namespace) -> int:
         genotype_argv.extend(["--extra-minimap2-args", args.extra_minimap2_args])
     if args.keep_paf:
         genotype_argv.append("--keep-paf")
-    rc = assign_hcv_genotypes_from_fasta.main(genotype_argv)
+    rc = genotyping.main(genotype_argv)
     if rc:
         return rc
 
-    genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
-    reference_catalog = hcv_cluster_prep.load_reference_catalog(args.reference_map)
-    genotypes, unsupported = hcv_cluster_stages.plan_genotypes(
+    genotype_rows = workflow.read_genotype_assignments(genotype_csv)
+    reference_catalog = prep.load_reference_catalog(args.reference_map)
+    genotypes, unsupported = stages.plan_genotypes(
         genotype_rows, args.genotype, reference_catalog
     )
-    hcv_cluster_stages.warn_unsupported(unsupported)
+    stages.warn_unsupported(unsupported)
     if not genotypes:
         _write_sample_outputs(args, outdir, input_path, metadata_rows)
         raise RuntimeError(
@@ -694,7 +686,7 @@ def command_run(args: argparse.Namespace) -> int:
     for genotype in genotypes:
         print(f"Analysing subtype: {genotype}")
 
-        genotype_dir = outdir / "by_genotype" / hcv_workflow.safe_genotype_name(genotype)
+        genotype_dir = outdir / "by_genotype" / workflow.safe_genotype_name(genotype)
         genotype_dir.mkdir(parents=True, exist_ok=True)
         prefix = genotype_dir / "prep"
         genotype_fasta = genotype_fasta_dir / f"hcv_{genotype}.fasta"
@@ -728,13 +720,13 @@ def command_run(args: argparse.Namespace) -> int:
             cached_prefix = (
                 args.reuse_alignments
                 / "by_genotype"
-                / hcv_workflow.safe_genotype_name(genotype)
+                / workflow.safe_genotype_name(genotype)
                 / "prep"
             )
             cached_alignment = Path(f"{cached_prefix}.aligned.fasta")
             if cached_alignment.exists():
                 prep_argv.extend(["--cached-alignment", str(cached_alignment)])
-                reusable, total = hcv_cluster_prep.count_reusable_sequences(
+                reusable, total = prep.count_reusable_sequences(
                     genotype_fasta, cached_alignment
                 )
                 print(
@@ -744,7 +736,7 @@ def command_run(args: argparse.Namespace) -> int:
             else:
                 print(f"--> No cached alignment for subtype {genotype}; aligning all sequences")
         with suppress():
-            rc = hcv_cluster_prep.main(prep_argv)
+            rc = prep.main(prep_argv)
         if rc:
             return rc
 
@@ -762,7 +754,7 @@ def command_run(args: argparse.Namespace) -> int:
 
         clustering_fasta = Path(f"{prefix}.clustering.fasta")
         if variant_plan.has_duplicates:
-            dropped = hcv_cluster_stages.select_variants(
+            dropped = stages.select_variants(
                 variant_plan, genotype_rows, genotype, qc_path, args.duplicate_selection,
                 clustering_fasta, out_decisions=genotype_dir / "variant_decisions.csv",
             )
@@ -781,7 +773,7 @@ def command_run(args: argparse.Namespace) -> int:
             tn93_csv = genotype_dir / "tn93.csv"
             links_csv = genotype_dir / "links.csv"
             clusters_csv = genotype_dir / "clusters.csv"
-            hcv_cluster_stages.cluster_sequences(
+            stages.cluster_sequences(
                 "tn93",
                 clustering_fasta,
                 out_distances=tn93_csv,
@@ -813,7 +805,7 @@ def command_run(args: argparse.Namespace) -> int:
             else:
                 snp_links_csv = genotype_dir / "snp_links.csv"
                 snp_clusters_csv = genotype_dir / "snp_clusters.csv"
-            snp_links = hcv_cluster_stages.cluster_sequences(
+            snp_links = stages.cluster_sequences(
                 "snp",
                 clustering_fasta,
                 out_distances=snp_csv,
@@ -843,17 +835,17 @@ def command_run(args: argparse.Namespace) -> int:
 
     primary_clusters_csv = outdir / "clusters.csv"
     primary_links_csv = outdir / "links.csv"
-    variants_csv = outdir / hcv_cluster_variants.VARIANTS_FILENAME
-    hcv_cluster_stages.merge_tables(
+    variants_csv = outdir / variants.VARIANTS_FILENAME
+    stages.merge_tables(
         dict(cluster_tables), dict(link_tables), primary_clusters_csv, primary_links_csv, variants_csv
     )
     if args.distance == "both":
-        hcv_cluster_stages.merge_tables(
+        stages.merge_tables(
             dict(snp_cluster_tables), dict(snp_link_tables),
             outdir / "clusters.snp.csv", outdir / "links.snp.csv", variants_csv,
         )
     for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables]:
-        hcv_cluster_stages.annotate_clusters(clusters_path, variants_csv)
+        stages.annotate_clusters(clusters_path, variants_csv)
 
     if args.registry is not None:
         _apply_cluster_labels(args, outdir, primary_clusters_csv)
@@ -895,7 +887,7 @@ def command_refs(args: argparse.Namespace) -> int:
     if args.verbose:
         prep_refs_argv.append("-v")
     with suppress():
-        rc = hcv_cluster_prep.main(prep_refs_argv)
+        rc = prep.main(prep_refs_argv)
     if rc == 0:
         print(f"--> Done (stored in: {args.refs_dir})")
     return rc
@@ -1033,7 +1025,7 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--label-prefix",
         metavar="STR",
-        default=hcv_cluster_labels.DEFAULT_PREFIX,
+        default=labels.DEFAULT_PREFIX,
         help=adv("Prefix for newly created cluster labels (default: HCV)"),
     )
     run_parser.add_argument(
@@ -1044,7 +1036,7 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--duplicate-selection",
-        choices=hcv_cluster_variants.SELECTION_MODES,
+        choices=variants.SELECTION_MODES,
         default="region-coverage",
         help=(
             "When one FASTA ID has several distinct sequences with the same genotype, keep "
@@ -1084,7 +1076,7 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--panel-fasta",
         metavar="PATH",
         type=Path,
-        default=assign_hcv_genotypes_from_fasta.DEFAULT_PANEL,
+        default=genotyping.DEFAULT_PANEL,
         help=adv("Reference panel FASTA for genotyping"),
     )
     run_parser.add_argument(
@@ -1128,7 +1120,7 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--refs-dir",
         metavar="PATH",
         type=Path,
-        default=hcv_cluster_prep.DEFAULT_REFS_DIR,
+        default=prep.DEFAULT_REFS_DIR,
         help=adv("Directory of reference GenBank/FASTA files (default: the set bundled with the repository)"),
     )
     run_parser.add_argument(
@@ -1356,7 +1348,7 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "--refs-dir",
         metavar="PATH",
         type=Path,
-        default=hcv_cluster_prep.DEFAULT_REFS_DIR,
+        default=prep.DEFAULT_REFS_DIR,
         help="Reference directory (default: the set bundled with the repository)",
     )
     refs_parser.add_argument(
@@ -1408,7 +1400,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a subcommand is required")
     try:
         return args.func(args)
-    except (RuntimeError, ValueError, hcv_cluster_prep.HcvPrepError) as exc:
+    except (RuntimeError, ValueError, prep.HcvPrepError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

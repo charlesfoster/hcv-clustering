@@ -10,11 +10,11 @@ import tempfile
 from collections import OrderedDict, defaultdict
 from pathlib import Path
 
-import hcv_cluster_prep
+from . import prep
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_PANEL = SCRIPT_DIR / "reference_data" / "hcv_references.fasta"
+DEFAULT_PANEL = SCRIPT_DIR / "data" / "hcv_references.fasta"
 
 
 def parse_args(argv=None):
@@ -138,14 +138,14 @@ def parse_fasta(path):
 def normalize_records(records):
     """Strip alignment-gap characters and non-IUPAC bases before minimap2 sees the
     sequences, so pre-aligned/exported FASTA input doesn't inflate query_length and
-    tank query_coverage. Mirrors hcv_cluster_prep.normalize_input_record."""
+    tank query_coverage. Mirrors prep.normalize_input_record."""
     logger = logging.getLogger(__name__)
     normalized = OrderedDict()
     for query_id, record in records.items():
-        fasta_record = hcv_cluster_prep.FastaRecord(header=query_id, sequence=record["sequence"])
+        fasta_record = prep.FastaRecord(header=query_id, sequence=record["sequence"])
         try:
-            sequence = hcv_cluster_prep.normalize_input_record(fasta_record, logger).sequence
-        except hcv_cluster_prep.HcvPrepError:
+            sequence = prep.normalize_input_record(fasta_record, logger).sequence
+        except prep.HcvPrepError:
             # Empty after stripping gaps/whitespace; leave blank so it falls through
             # to the existing "no_alignment" qc_fail path instead of crashing the batch.
             sequence = ""

@@ -1,10 +1,9 @@
 import csv
 from pathlib import Path
 
-import hcv_cluster_audit as audit_mod
-import hcv_cluster_prep
-import hcv_cluster_variants
-from hcv_cluster_prep import FastaRecord
+from hcv_cluster import audit as audit_mod
+from hcv_cluster import prep, variants
+from hcv_cluster.prep import FastaRecord
 
 
 def _geno(seq_id: str, genotype: str = "", status: str = "pass", reason: str = "") -> dict[str, str]:
@@ -32,7 +31,7 @@ def _qc(seq_id: str, passed: bool, coverage: float = 0.9) -> dict[str, str]:
 
 
 def _build(records, genotype_rows, **kwargs):
-    plan = hcv_cluster_variants.resolve_duplicate_ids(records)
+    plan = variants.resolve_duplicate_ids(records)
     return plan, audit_mod.build_audit(
         records,
         plan,
@@ -98,9 +97,9 @@ def test_repeats_and_variants_get_one_audit_row_per_input_record(tmp_path: Path)
         FastaRecord("s2", "CCCC"),
         FastaRecord("s2", "CCCG"),  # distinct variant, same genotype
     ]
-    plan = hcv_cluster_variants.resolve_duplicate_ids(records)
+    plan = variants.resolve_duplicate_ids(records)
     genotype_rows = [_geno("s1", "1a"), _geno("s2__v1", "1a"), _geno("s2__v2", "1a")]
-    hcv_cluster_variants.record_genotypes(plan, genotype_rows)
+    variants.record_genotypes(plan, genotype_rows)
     qc_rows = {sid: _qc(sid, True) for sid in ("s1", "s2__v1", "s2__v2")}
     qc_rows["s2__v2"]["coverage_fraction"] = "0.95"
     qc_path = tmp_path / "prep.qc.csv"
@@ -108,7 +107,7 @@ def test_repeats_and_variants_get_one_audit_row_per_input_record(tmp_path: Path)
         writer = csv.DictWriter(handle, fieldnames=list(qc_rows["s1"]))
         writer.writeheader()
         writer.writerows(qc_rows.values())
-    hcv_cluster_variants.select_same_genotype(plan, "1a", qc_path, "region-coverage")
+    variants.select_same_genotype(plan, "1a", qc_path, "region-coverage")
 
     audits = audit_mod.build_audit(
         records,
@@ -153,7 +152,7 @@ def test_outputs_metadata_tables_and_labelled_fasta(tmp_path: Path) -> None:
     assert read(all_path)[1]["failed_stage"] == "genotyping"
 
     fasta = audit_mod.write_surviving_fasta(audits, records, tmp_path / "survivors.fasta")
-    parsed = hcv_cluster_prep.read_fasta_records(fasta)
+    parsed = prep.read_fasta_records(fasta)
     assert [r.header for r in parsed] == ["good|1a|1a_C0001 extra words"]
 
 

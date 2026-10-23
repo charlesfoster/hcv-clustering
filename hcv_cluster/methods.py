@@ -10,8 +10,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-import hcv_cluster_prep
-import hcv_workflow
+from . import prep, workflow
 
 
 # Explicit per-region defaults; some are provisional operational conventions and
@@ -62,7 +61,7 @@ FALLBACK_THRESHOLD_SNP: float = REGION_THRESHOLDS_SNP["e1-e2"]
 
 def canonical_threshold_region(region: str) -> str:
     """Normalize equivalent region spellings before choosing a default cutoff."""
-    canonical = hcv_cluster_prep.expand_region_expression(region)
+    canonical = prep.expand_region_expression(region)
     equivalent_expressions = {
         "e1+e2": "e1-e2",
         "e1,e2": "e1-e2",
@@ -99,7 +98,7 @@ def region_threshold_is_explicit(region: str, distance: str = "tn93") -> bool:
 def compute_snp_distances_detailed(
     fasta_path: Path,
 ) -> list[tuple[str, str, int, int, float]]:
-    records = hcv_cluster_prep.read_fasta_records(fasta_path)
+    records = prep.read_fasta_records(fasta_path)
     results: list[tuple[str, str, int, int, float]] = []
     acgt = frozenset("ACGT")
     for i in range(len(records)):
@@ -120,10 +119,10 @@ def compute_snp_distances_detailed(
     return results
 
 
-def compute_snp_distances(fasta_path: Path) -> list[hcv_workflow.DistanceRow]:
+def compute_snp_distances(fasta_path: Path) -> list[workflow.DistanceRow]:
     detailed = compute_snp_distances_detailed(fasta_path)
     return [
-        hcv_workflow.DistanceRow(id_i, id_j, normalized)
+        workflow.DistanceRow(id_i, id_j, normalized)
         for id_i, id_j, _snp_count, _comparable_sites, normalized in detailed
     ]
 
@@ -132,7 +131,7 @@ def write_snp_csv(
     path: Path,
     fasta_path: Path,
     detailed: list[tuple[str, str, int, int, float]] | None = None,
-) -> list[hcv_workflow.DistanceRow]:
+) -> list[workflow.DistanceRow]:
     if detailed is None:
         detailed = compute_snp_distances_detailed(fasta_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,7 +152,7 @@ def write_snp_csv(
                 }
             )
     return [
-        hcv_workflow.DistanceRow(id_i, id_j, normalized)
+        workflow.DistanceRow(id_i, id_j, normalized)
         for id_i, id_j, _snp_count, _comparable_sites, normalized in detailed
     ]
 

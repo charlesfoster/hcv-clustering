@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from hcv_cluster_metadata import (
+from hcv_cluster.metadata import (
     AGE_RANGE_ORDER,
     MISSING_VALUE,
     MetadataValidationError,

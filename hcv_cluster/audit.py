@@ -28,9 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-import hcv_cluster_metadata
-import hcv_cluster_prep
-import hcv_cluster_variants
+from . import metadata, prep, variants
 
 AUDIT_FILENAME = "sample_audit.csv"
 METADATA_ALL_FILENAME = "metadata.all_samples.csv"
@@ -54,8 +52,8 @@ STAGES = (
 
 AUDIT_FIELDS = (
     "sample_id",
-    hcv_cluster_variants.BASE_SAMPLE_FIELD,
-    hcv_cluster_variants.MIXED_INFECTION_FIELD,
+    variants.BASE_SAMPLE_FIELD,
+    variants.MIXED_INFECTION_FIELD,
     "input_record",
     "overall_status",
     "failed_stage",
@@ -70,8 +68,8 @@ AUDIT_FIELDS = (
 # Pipeline-derived columns prepended to the user's metadata in the metadata tables.
 METADATA_PIPELINE_FIELDS = (
     "sample_id",
-    hcv_cluster_variants.BASE_SAMPLE_FIELD,
-    hcv_cluster_variants.MIXED_INFECTION_FIELD,
+    variants.BASE_SAMPLE_FIELD,
+    variants.MIXED_INFECTION_FIELD,
     "genotype",
     "overall_status",
     "failed_stage",
@@ -125,8 +123,8 @@ class SampleAudit:
         failed = self.failed_stage
         row: dict[str, str | int] = {
             "sample_id": self.sample_id,
-            hcv_cluster_variants.BASE_SAMPLE_FIELD: self.base_sample_id,
-            hcv_cluster_variants.MIXED_INFECTION_FIELD: "true" if self.mixed_infection else "false",
+            variants.BASE_SAMPLE_FIELD: self.base_sample_id,
+            variants.MIXED_INFECTION_FIELD: "true" if self.mixed_infection else "false",
             "input_record": self.input_record,
             "overall_status": FAIL if failed else PASS,
             "failed_stage": failed,
@@ -189,8 +187,8 @@ def read_qc_rows(qc_path: Path) -> dict[str, dict[str, str]]:
 
 
 def build_audit(
-    input_records: Sequence[hcv_cluster_prep.FastaRecord],
-    variant_plan: hcv_cluster_variants.VariantPlan,
+    input_records: Sequence[prep.FastaRecord],
+    variant_plan: variants.VariantPlan,
     genotype_rows: Iterable[Mapping[str, str]],
     *,
     min_query_coverage: float,
@@ -336,8 +334,8 @@ def write_metadata_tables(
     nodes = [
         {
             "sample_id": audit.sample_id,
-            hcv_cluster_variants.BASE_SAMPLE_FIELD: audit.base_sample_id,
-            hcv_cluster_variants.MIXED_INFECTION_FIELD: "true" if audit.mixed_infection else "false",
+            variants.BASE_SAMPLE_FIELD: audit.base_sample_id,
+            variants.MIXED_INFECTION_FIELD: "true" if audit.mixed_infection else "false",
             "genotype": audit.genotype,
             "overall_status": PASS if audit.survived else FAIL,
             "failed_stage": audit.failed_stage,
@@ -349,9 +347,9 @@ def write_metadata_tables(
         if not audit.is_repeat
     ]
     joined = (
-        hcv_cluster_metadata.join_metadata(nodes, metadata_rows)[0] if metadata_rows else nodes
+        metadata.join_metadata(nodes, metadata_rows)[0] if metadata_rows else nodes
     )
-    fields = (*METADATA_PIPELINE_FIELDS, *hcv_cluster_metadata.metadata_fields(metadata_rows))
+    fields = (*METADATA_PIPELINE_FIELDS, *metadata.metadata_fields(metadata_rows))
     for path, rows in (
         (all_path, joined),
         (surviving_path, [row for row in joined if row["overall_status"] == PASS]),
@@ -373,7 +371,7 @@ def labelled_header(header: str, genotype: str, cluster_id: str) -> str:
 
 def write_surviving_fasta(
     audits: Sequence[SampleAudit],
-    records: Sequence[hcv_cluster_prep.FastaRecord],
+    records: Sequence[prep.FastaRecord],
     path: Path,
 ) -> Path:
     """Write the original (unaligned) sequences of survivors with genotype+cluster labels.
@@ -383,7 +381,7 @@ def write_surviving_fasta(
     """
     by_id = {audit.sample_id: audit for audit in audits if audit.survived and not audit.is_repeat}
     labelled = [
-        hcv_cluster_prep.FastaRecord(
+        prep.FastaRecord(
             labelled_header(
                 record.header,
                 by_id[record.header.split()[0]].genotype,
@@ -394,5 +392,5 @@ def write_surviving_fasta(
         for record in records
         if record.header.split()[0] in by_id
     ]
-    hcv_cluster_prep.write_fasta_records(labelled, path)
+    prep.write_fasta_records(labelled, path)
     return path

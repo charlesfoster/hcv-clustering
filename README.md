@@ -50,15 +50,9 @@ Every command below is run from inside the `hcv-clustering` directory.
 
 ## Quick start
 
-### Step 1 — Cache reference sequences (first run only)
+### Step 1 — Reference sequences (nothing to do)
 
-Download and cache the genotype-specific reference GenBank records used for alignment coordinate extraction:
-
-```bash
-pixi run hcv-cluster refs
-```
-
-References are downloaded from NCBI and stored in `refs/`. This step only needs to be repeated if you add a new genotype via `--reference-map` or want to force a re-download with `--force-download`.
+The GenBank reference records used for alignment coordinates ship with the repository (`hcv_cluster/data/genbank`), so the first run needs no network access. `pixi run hcv-cluster refs` is only needed if you add a subtype with `--reference-map` and want to download it ahead of time, or force a re-download with `--force-download`.
 
 ### Step 2 — Run the clustering pipeline
 
@@ -260,7 +254,7 @@ nextflow run main.nf -profile docker --input samples.fasta --outdir results
 nextflow run main.nf -profile test,docker --outdir test_results
 ```
 
-Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `reference_data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed. Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
+Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed. Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
 
 To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
 
@@ -269,7 +263,7 @@ include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
 HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
 ```
 
-The stages are also available as `python hcv_cluster_stages.py <stage>` (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`), alongside `assign_hcv_genotypes_from_fasta.py` and `hcv_cluster_prep.py prep-align`, for running steps by hand or from another workflow engine.
+The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv_cluster.stages <stage>`) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
 
 **Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
 
@@ -497,8 +491,24 @@ pixi run hcv-workflow cluster \
 
 ---
 
+## Code layout
+
+```
+hcv_cluster/            the Python package (also pip-installable: pyproject.toml)
+  cli.py                hcv-cluster run / refs         (python -m hcv_cluster)
+  stages.py             file-in/file-out stages shared by the CLI and Nextflow
+  genotyping.py         minimap2 subtype assignment
+  prep.py               MAFFT alignment and region extraction
+  methods.py            region thresholds, SNP distance
+  variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py
+  data/                 genotype panel, ICTV table, bundled GenBank references
+streamlit_app.py        GUI entry point
+main.nf workflows/ modules/ nextflow.config Dockerfile    the Nextflow workflow
+```
+
 ## Tests
 
 ```bash
-pixi run test
+pixi run test            # unit and stage-chain tests
+pixi run -e nf test      # also runs the CLI-vs-Nextflow parity test
 ```

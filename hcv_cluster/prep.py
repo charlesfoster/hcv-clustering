@@ -140,7 +140,7 @@ class HcvPrepError(RuntimeError):
 # Reference GenBank/FASTA records for every catalogued subtype ship with the repository,
 # so runs (including containerised and offline ones) never need the network. Only a
 # --reference-map accession that is not bundled is downloaded into the refs directory.
-DEFAULT_REFS_DIR = Path(__file__).resolve().parent / "reference_data" / "genbank"
+DEFAULT_REFS_DIR = Path(__file__).resolve().parent / "data" / "genbank"
 
 DEFAULT_REFERENCE_CATALOG = {
     "1a": ReferenceSpec("1a", "EF407457.1"),
@@ -229,7 +229,7 @@ DEFAULT_REFERENCE_CATALOG = {
     "8a": ReferenceSpec("8a", "MH590698.1"),
 }
 # ICTV lists 94 confirmed HCV subtypes across 8 genotypes (see
-# reference_data/ictv_hcv_subtypes.tsv, mirrored from ICTV Flaviviridae/Hepacivirus
+# hcv_cluster/data/ictv_hcv_subtypes.tsv, mirrored from ICTV Flaviviridae/Hepacivirus
 # Table 1). The 84 covered here are validated by tests/test_reference_catalog.py.
 #
 # The 10 not covered are 6xa-6xj. ICTV lists exemplar accessions for all of them, but

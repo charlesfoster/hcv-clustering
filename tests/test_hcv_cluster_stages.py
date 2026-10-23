@@ -6,7 +6,7 @@ other stage runs for real (SNP distances need no binary).
 import csv
 from pathlib import Path
 
-import hcv_cluster_stages as stages
+from hcv_cluster import stages
 
 BASE = "ACGTACGTAC" * 12  # 120 nt
 

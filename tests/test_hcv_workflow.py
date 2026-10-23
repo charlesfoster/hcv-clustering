@@ -2,40 +2,40 @@ from pathlib import Path
 
 import pytest
 
-import hcv_workflow
+from hcv_cluster import workflow
 
 
 def test_parse_distance_table_with_header(tmp_path: Path) -> None:
     distances = tmp_path / "distances.csv"
     distances.write_text("ID1,ID2,Distance\nA,B,0.01\nA,C,0.02\n", encoding="utf-8")
 
-    rows = hcv_workflow.parse_distance_table(distances)
+    rows = workflow.parse_distance_table(distances)
 
     assert rows == [
-        hcv_workflow.DistanceRow("A", "B", 0.01),
-        hcv_workflow.DistanceRow("A", "C", 0.02),
+        workflow.DistanceRow("A", "B", 0.01),
+        workflow.DistanceRow("A", "C", 0.02),
     ]
 
 
 def test_threshold_distances_excludes_self_links_by_default() -> None:
     rows = [
-        hcv_workflow.DistanceRow("A", "A", 0.0),
-        hcv_workflow.DistanceRow("A", "B", 0.014),
-        hcv_workflow.DistanceRow("A", "C", 0.016),
+        workflow.DistanceRow("A", "A", 0.0),
+        workflow.DistanceRow("A", "B", 0.014),
+        workflow.DistanceRow("A", "C", 0.016),
     ]
 
-    links = hcv_workflow.threshold_distances(rows, threshold=0.015)
+    links = workflow.threshold_distances(rows, threshold=0.015)
 
-    assert links == [hcv_workflow.LinkRow("A", "B", 0.014)]
+    assert links == [workflow.LinkRow("A", "B", 0.014)]
 
 
 def test_connected_components_include_isolates() -> None:
     links = [
-        hcv_workflow.LinkRow("A", "B", 0.01),
-        hcv_workflow.LinkRow("B", "C", 0.01),
+        workflow.LinkRow("A", "B", 0.01),
+        workflow.LinkRow("B", "C", 0.01),
     ]
 
-    assignments = hcv_workflow.connected_components(links, nodes=["A", "B", "C", "D"])
+    assignments = workflow.connected_components(links, nodes=["A", "B", "C", "D"])
 
     assert assignments["A"] == assignments["B"] == assignments["C"]
     assert assignments["D"] != assignments["A"]
@@ -45,14 +45,14 @@ def test_read_nodes_file_accepts_plain_lists(tmp_path: Path) -> None:
     nodes = tmp_path / "nodes.txt"
     nodes.write_text("A\nB\nA\n", encoding="utf-8")
 
-    assert hcv_workflow.read_nodes_file(nodes) == ["A", "B"]
+    assert workflow.read_nodes_file(nodes) == ["A", "B"]
 
 
 def test_write_clusters_reports_component_size(tmp_path: Path) -> None:
     output = tmp_path / "clusters.csv"
     assignments = {"A": "C0001", "B": "C0001", "D": "C0002"}
 
-    hcv_workflow.write_clusters(output, assignments)
+    workflow.write_clusters(output, assignments)
 
     assert output.read_text(encoding="utf-8").splitlines() == [
         "sample_id,cluster_id,cluster_size",
@@ -68,7 +68,7 @@ def test_detected_pass_genotypes_and_merged_cluster_ids(tmp_path: Path) -> None:
         {"assignment_status": "qc_fail", "assigned_genotype": ""},
         {"assignment_status": "pass", "assigned_genotype": "3a"},
     ]
-    assert hcv_workflow.detected_pass_genotypes(rows) == ["1a", "3a"]
+    assert workflow.detected_pass_genotypes(rows) == ["1a", "3a"]
 
     cluster_1a = tmp_path / "1a_clusters.csv"
     cluster_3a = tmp_path / "3a_clusters.csv"
@@ -76,7 +76,7 @@ def test_detected_pass_genotypes_and_merged_cluster_ids(tmp_path: Path) -> None:
     cluster_3a.write_text("sample_id,cluster_id,cluster_size\nB,C0001,1\n", encoding="utf-8")
 
     output = tmp_path / "merged.csv"
-    hcv_workflow.merge_cluster_tables([("1a", cluster_1a), ("3a", cluster_3a)], output)
+    workflow.merge_cluster_tables([("1a", cluster_1a), ("3a", cluster_3a)], output)
 
     assert output.read_text(encoding="utf-8").splitlines() == [
         "sample_id,genotype,cluster_id,source_cluster_id,cluster_size",
@@ -104,7 +104,7 @@ def test_merge_link_tables(tmp_path: Path, inputs: dict[str, str], expected_rows
         tables.append((genotype, path))
 
     output = tmp_path / "merged_links.csv"
-    hcv_workflow.merge_link_tables(tables, output)
+    workflow.merge_link_tables(tables, output)
 
     assert output.read_text(encoding="utf-8").splitlines() == [
         "source,target,distance",

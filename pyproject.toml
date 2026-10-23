@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hcv-cluster"
+version = "0.2.0"
+description = "HCV genomic clustering for transmission surveillance"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Charles Foster" }]
+dependencies = ["biopython>=1.83"]
+
+[project.optional-dependencies]
+viz = ["networkx>=3.2", "plotly>=5.20", "kaleido>=1.3.0,<2"]
+gui = ["hcv-cluster[viz]", "streamlit>=1.32"]
+
+# The clustering tools (minimap2, MAFFT, TN93) are not Python packages. Install them with
+# conda/pixi (see pixi.toml) or put them on PATH; pip installs only the Python code.
+[project.scripts]
+hcv-cluster = "hcv_cluster.cli:main"
+hcv-stage = "hcv_cluster.stages:main"
+hcv-workflow = "hcv_cluster.workflow:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["hcv_cluster"]  # reference records under hcv_cluster/data are included
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -65,6 +65,50 @@ def resolve_ids(
     return input_records, plan
 
 
+# --- plan-genotypes ---------------------------------------------------------------------
+
+
+def plan_genotypes(
+    genotype_rows: Sequence[Mapping[str, str]],
+    genotype_filter: Sequence[str] | None,
+    catalog: Mapping[str, Any],
+) -> tuple[list[str], dict[str, int]]:
+    """Subtypes to analyse, and the sequence count of passing subtypes with no reference.
+
+    A subtype without a configured reference is skipped, never fatal: one rare subtype
+    must not discard every other subtype's results.
+    """
+    genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
+    if genotype_filter:
+        genotypes = [g for g in genotypes if g in set(genotype_filter)]
+    unsupported = {
+        g: sum(1 for row in genotype_rows if row.get("assigned_genotype") == g)
+        for g in genotypes
+        if g not in catalog
+    }
+    return [g for g in genotypes if g not in unsupported], unsupported
+
+
+def warn_unsupported(unsupported: Mapping[str, int]) -> None:
+    if unsupported:
+        detail = ", ".join(f"{gt} ({n})" for gt, n in sorted(unsupported.items()))
+        print(
+            f"WARNING: no reference genome configured for subtype(s) {detail}; "
+            "these sequences are skipped. Supply one with --reference-map to include them.",
+            file=sys.stderr,
+        )
+
+
+def filter_genotype_fastas(
+    runnable: Sequence[str], fasta_dir: Path, skipped_dir: Path
+) -> None:
+    """Move per-subtype FASTAs that will not be analysed out of the way."""
+    skipped_dir.mkdir(parents=True, exist_ok=True)
+    for fasta in sorted(fasta_dir.glob("hcv_*.fasta")):
+        if fasta.stem.removeprefix("hcv_") not in runnable:
+            shutil.move(str(fasta), skipped_dir / fasta.name)
+
+
 # --- select-variants --------------------------------------------------------------------
 
 
@@ -115,6 +159,15 @@ def cluster_sequences(
     Returns the SNP links (empty for TN93) so callers can describe them in whole SNPs.
     """
     links: list[dict[str, str | int | float]] = []
+    if not any(line.startswith(">") for line in fasta.read_text().splitlines()):
+        # Nothing survived QC for this subtype: leave empty tables rather than failing.
+        for path, header in (
+            (out_distances, "source,target,distance\n"),
+            (out_links, "source,target,distance\n"),
+            (out_clusters, "sample_id,cluster_id,cluster_size\n"),
+        ):
+            path.write_text(header)
+        return links
     if method == "tn93":
         rc = hcv_workflow.run_tn93(
             argparse.Namespace(
@@ -413,6 +466,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-variants", type=Path, required=True)
     p.set_defaults(func=_cmd_resolve_ids)
 
+    p = sub.add_parser("plan-genotypes", help="Set aside per-subtype FASTAs that cannot be analysed")
+    p.add_argument("--genotypes", type=Path, required=True)
+    p.add_argument("--fasta-dir", type=Path, required=True)
+    p.add_argument("--skipped-dir", type=Path, default=Path("genotype_fastas_skipped"))
+    p.add_argument("--genotype", action="append", default=None)
+    p.add_argument("--reference-map", type=Path, default=None)
+    p.set_defaults(func=_cmd_plan_genotypes)
+
     p = sub.add_parser("select-variants", help="Keep one usable same-genotype variant per sample")
     p.add_argument("--variants", type=Path, required=True)
     p.add_argument("--genotypes", type=Path, required=True)
@@ -438,12 +499,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ambiguity-fraction", type=float, default=None)
     p.add_argument("--min-overlap", type=int, default=None)
     p.add_argument("--extra-tn93-args", default="")
+    p.add_argument("--variants", type=Path, default=None,
+                   help="sequence_variants.csv, to add base_sample_id / mixed_infection columns")
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_cluster)
 
     p = sub.add_parser("merge", help="Merge per-subtype cluster and link tables")
-    p.add_argument("--clusters", nargs="+", required=True, metavar="GENOTYPE=PATH")
-    p.add_argument("--links", nargs="+", required=True, metavar="GENOTYPE=PATH")
+    p.add_argument("--clusters", nargs="+", default=[], metavar="GENOTYPE=PATH")
+    p.add_argument("--links", nargs="+", default=[], metavar="GENOTYPE=PATH")
+    p.add_argument("--tables-dir", type=Path, default=None,
+                   help="Instead of --clusters/--links: a directory of <genotype>.<method>.clusters.csv "
+                        "and <genotype>.<method>.links.csv files")
+    p.add_argument("--method", default="tn93", help="Method name used in --tables-dir file names")
     p.add_argument("--variants", type=Path, default=None)
     p.add_argument("--out-clusters", type=Path, required=True)
     p.add_argument("--out-links", type=Path, required=True)
@@ -503,6 +570,18 @@ def _cmd_resolve_ids(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_plan_genotypes(args: argparse.Namespace) -> int:
+    runnable, unsupported = plan_genotypes(
+        hcv_workflow.read_genotype_assignments(args.genotypes),
+        args.genotype,
+        hcv_cluster_prep.load_reference_catalog(args.reference_map),
+    )
+    warn_unsupported(unsupported)
+    filter_genotype_fastas(runnable, args.fasta_dir, args.skipped_dir)
+    print(f"{len(runnable)} subtype(s) to analyse: {', '.join(runnable) or 'none'}")
+    return 0
+
+
 def _cmd_select_variants(args: argparse.Namespace) -> int:
     plan = hcv_cluster_variants.read_variants_csv(args.variants)
     dropped = select_variants(
@@ -537,14 +616,25 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
         extra_tn93_args=args.extra_tn93_args,
         quiet=not args.verbose,
     )
+    annotate_clusters(args.out_clusters, args.variants)
     print(f"{args.method} threshold {threshold:.4g}")
     return 0
 
 
+def _tables_in_dir(directory: Path, method: str, kind: str) -> dict[str, Path]:
+    suffix = f".{method}.{kind}.csv"
+    return {path.name.removesuffix(suffix): path for path in sorted(directory.glob(f"*{suffix}"))}
+
+
 def _cmd_merge(args: argparse.Namespace) -> int:
+    if args.tables_dir is not None:
+        clusters = _tables_in_dir(args.tables_dir, args.method, "clusters")
+        links = _tables_in_dir(args.tables_dir, args.method, "links")
+    else:
+        clusters, links = parse_labelled_paths(args.clusters), parse_labelled_paths(args.links)
     merge_tables(
-        parse_labelled_paths(args.clusters),
-        parse_labelled_paths(args.links),
+        clusters,
+        links,
         args.out_clusters,
         args.out_links,
         args.variants,

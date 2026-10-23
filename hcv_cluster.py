@@ -645,33 +645,18 @@ def command_run(args: argparse.Namespace) -> int:
         return rc
 
     genotype_rows = hcv_workflow.read_genotype_assignments(genotype_csv)
-    genotypes = hcv_workflow.detected_pass_genotypes(genotype_rows)
-    if args.genotype:
-        requested = set(args.genotype)
-        genotypes = [genotype for genotype in genotypes if genotype in requested]
-    if not genotypes:
-        _write_sample_outputs(args, outdir, input_path, metadata_rows)
-        raise RuntimeError("No passing genotype assignments were available to process")
-
-    # A detected subtype with no configured reference must not abort the whole run and
-    # discard every other subtype's results; skip it with a warning, as hcv_workflow does.
     reference_catalog = hcv_cluster_prep.load_reference_catalog(args.reference_map)
-    unsupported = [genotype for genotype in genotypes if genotype not in reference_catalog]
-    if unsupported:
-        unsupported_counts = {
-            gt: sum(1 for r in genotype_rows if r.get("assigned_genotype") == gt)
-            for gt in unsupported
-        }
-        detail = ", ".join(f"{gt} ({unsupported_counts[gt]})" for gt in sorted(unsupported))
-        print(
-            f"WARNING: no reference genome configured for subtype(s) {detail}; "
-            "these sequences are skipped. Supply one with --reference-map to include them.",
-            file=sys.stderr,
-        )
-        genotypes = [genotype for genotype in genotypes if genotype in reference_catalog]
+    genotypes, unsupported = hcv_cluster_stages.plan_genotypes(
+        genotype_rows, args.genotype, reference_catalog
+    )
+    hcv_cluster_stages.warn_unsupported(unsupported)
     if not genotypes:
         _write_sample_outputs(args, outdir, input_path, metadata_rows)
-        raise RuntimeError("No passing genotype assignments have a configured reference genome")
+        raise RuntimeError(
+            "No passing genotype assignments have a configured reference genome"
+            if unsupported
+            else "No passing genotype assignments were available to process"
+        )
 
     gt_counts = {
         gt: sum(1 for r in genotype_rows if r.get("assigned_genotype") == gt)

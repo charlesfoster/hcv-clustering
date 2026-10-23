@@ -244,6 +244,39 @@ Tick **Hide singletons** to restrict the plot (and its stats) to sequences in a 
 
 ---
 
+## Running with Nextflow
+
+The same pipeline runs as a Nextflow workflow, for servers, HPC clusters, or embedding in a larger pipeline. Nextflow only wires files together: every scientific decision (thresholds, regions, supported subtypes, sample bookkeeping) is made by the same Python code that `hcv-cluster run` uses, so the two give identical tables. `tests/test_nextflow_parity.py` checks this (`pixi run -e nf test`).
+
+```bash
+# Local, tools from the pixi environment
+pixi run -e nf nextflow run main.nf --input samples.fasta --outdir results
+
+# In a container built from pixi.lock (identical tool versions)
+docker build -t hcv-cluster .
+nextflow run main.nf -profile docker --input samples.fasta --outdir results
+
+# Quick check that an installation works (uses a small synthetic data set)
+nextflow run main.nf -profile test,docker --outdir test_results
+```
+
+Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `reference_data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed. Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
+
+To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
+
+```groovy
+include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
+HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
+```
+
+The stages are also available as `python hcv_cluster_stages.py <stage>` (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`), alongside `assign_hcv_genotypes_from_fasta.py` and `hcv_cluster_prep.py prep-align`, for running steps by hand or from another workflow engine.
+
+**Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
+
+**Environments.** `pixi.toml` pins the scientific tools once, in the `core` feature, and three environments share that pin: `default` (development, tests, GUI), `nf` (adds Nextflow) and `pipeline` (only what the container installs). Bump tool versions deliberately, then re-check results; do not let re-locking move them.
+
+---
+
 ## Region expressions
 
 The `-r/--region` argument accepts a flexible expression describing which part of the genome to extract and align. The default `e1-e2` retains full E1 and E2, including HVR1. Use `e1-e2-nohvr1` to retain all of E1 and E2 except the first 81 nt of E2. The E1–E2 threshold of 0.03 is an operational, conservative starting point rather than a cutoff validated for this exact full-length region; sensitivity analysis remains recommended.

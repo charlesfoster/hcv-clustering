@@ -1,0 +1,16 @@
+.git
+.pixi
+.nextflow*
+work
+results*
+new_results
+refs
+hcv_refs
+tests
+test_data
+docs
+assets
+modules
+workflows
+__pycache__
+*.log

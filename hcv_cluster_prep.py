@@ -461,6 +461,20 @@ def download_reference(
     return bundle
 
 
+def write_cache_file(path: Path, text: str, logger: logging.Logger) -> None:
+    """Write a derived reference cache file only if it changed, tolerating a read-only directory.
+
+    The bundled reference directory is shared by concurrent pipeline processes and may be
+    read-only (a container image), so an unchanged file must never be rewritten.
+    """
+    try:
+        if path.exists() and path.read_text() == text:
+            return
+        path.write_text(text)
+    except OSError as exc:
+        logger.debug("Could not update %s (%s); continuing without the cache file", path, exc)
+
+
 def write_reference_region_cache(
     bundle: ReferenceBundle,
     regions: dict[str, RegionSegment],
@@ -477,7 +491,7 @@ def write_reference_region_cache(
         "coordinate_source": core_e2_segment.source,
         "coordinate_detail": core_e2_segment.detail,
     }
-    bundle.coords_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    write_cache_file(bundle.coords_path, json.dumps(payload, indent=2, sort_keys=True) + "\n", logger)
     regions_payload = {
         "genotype": bundle.spec.genotype,
         "reference_accession": bundle.spec.accession,
@@ -492,7 +506,7 @@ def write_reference_region_cache(
             for name, segment in sorted(regions.items(), key=lambda item: (item[1].start, item[0]))
         },
     }
-    bundle.regions_path.write_text(json.dumps(regions_payload, indent=2, sort_keys=True) + "\n")
+    write_cache_file(bundle.regions_path, json.dumps(regions_payload, indent=2, sort_keys=True) + "\n", logger)
     logger.info(
         "Core-E2 coordinates for %s: %s-%s (%s nt; %s)",
         bundle.spec.accession,

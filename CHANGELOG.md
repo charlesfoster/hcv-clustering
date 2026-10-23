@@ -31,7 +31,7 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 ### Changed
 - **Results-affecting:** default threshold is now chosen by region and distance metric (0.03 for the default
   `e1-e2`), not by genotype; default region is `e1-e2`; TN93 ambiguity handling defaults to `average`;
-  minimap2 preset `asm20`. See the handover document for the old-to-new table.
+  minimap2 preset `asm20`.
 - A sequence whose k-mer profile conflicts with its assigned subtype is excluded (and audited) instead of
   aborting the whole run.
 - Same-sample variants of one genotype compete only if they passed region QC.

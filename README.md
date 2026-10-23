@@ -268,7 +268,9 @@ Parameters mirror the CLI flags with underscores (`--distance both`, `--region c
 
 Network plots use the same options as the CLI with underscores: `--plot_network html --plot_scope both --plot_color_by location`, where the colour field is a column of your `--metadata` CSV. Interactive HTML works everywhere, including the container; PNG and SVG additionally need a local Chrome, which the container does not include, so they are skipped there with a warning.
 
-To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf`:
+Releases and versioning are described in [docs/RELEASING.md](docs/RELEASING.md) and [CHANGELOG.md](CHANGELOG.md).
+
+To use the clustering inside another Nextflow pipeline, include the workflow rather than running `main.nf` (a complete example is in `examples/embed/`; also load `conf/hcv_cluster.config` for the parameter defaults):
 
 ```groovy
 include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
@@ -516,7 +518,7 @@ hcv_cluster/            the Python package (also pip-installable: pyproject.toml
   variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py
   data/                 genotype panel, ICTV table, bundled GenBank references
 streamlit_app.py        GUI entry point
-main.nf workflows/ modules/ nextflow.config Dockerfile    the Nextflow workflow
+main.nf workflows/ modules/ conf/ nextflow.config Dockerfile    the Nextflow workflow
 ```
 
 ## Tests

@@ -284,13 +284,19 @@ def build_audit(
         audit.cluster_label = cluster.get("cluster_label")
         audit.cluster_size = cluster.get("cluster_size", "")
         size = int(audit.cluster_size or 0)
-        audit.record(
-            "clustering",
-            True,
-            f"Member of {audit.cluster_label or audit.cluster_id} ({size} sequences)"
-            if size > 1
-            else "Singleton (no sequence within threshold)",
-        )
+        sequences = int(cluster.get("cluster_sequences") or size)
+        name = audit.cluster_label or audit.cluster_id
+        if size > 1:
+            reason = (
+                f"Member of {name} ({size} patients, {sequences} sequences)"
+                if sequences != size
+                else f"Member of {name} ({size} sequences)"
+            )
+        elif sequences > 1:
+            reason = f"Not a cluster: all {sequences} linked sequences are from one patient"
+        else:
+            reason = "Singleton (no sequence within threshold)"
+        audit.record("clustering", True, reason)
     return audits
 
 

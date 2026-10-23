@@ -40,7 +40,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Collection, Iterator, Mapping
 
 DEFAULT_PREFIX = "HCV"
 UNASSIGNED = "UNASSIGNED"
@@ -131,8 +131,12 @@ def assign_labels(
     run_id: str,
     run_date: str,
     prefix: str = DEFAULT_PREFIX,
+    eligible: Collection[str] | None = None,
 ) -> LabelResult:
     """Label the components of ``partition`` (member -> run-local component ID).
+
+    ``eligible`` limits labelling to those components (default: every component of two or
+    more members); the rest are treated as singletons, e.g. several sequences of one patient.
 
     Mutates ``registry``; callers wanting a dry run pass a copy.
     """
@@ -144,7 +148,11 @@ def assign_labels(
     components: dict[str, list[Member]] = defaultdict(list)
     for member, component in partition.items():
         components[component].append(member)
-    labelled = {c: sorted(ms) for c, ms in components.items() if len(ms) >= 2}
+    labelled = {
+        c: sorted(ms)
+        for c, ms in components.items()
+        if len(ms) >= 2 and (eligible is None or c in eligible)
+    }
 
     # Snapshot of who held which label before this run changes anything, so provenance
     # (split_from, "joined" events) does not depend on the order components are processed.
@@ -347,6 +355,7 @@ def label_run(
     commit: bool,
     prefix: str = DEFAULT_PREFIX,
     output_directory: Path | None = None,
+    eligible: Collection[str] | None = None,
 ) -> tuple[LabelResult, list[dict[str, str | int]], Registry]:
     """Label a partition against the registry in ``directory``; save only if ``commit``.
 
@@ -361,7 +370,8 @@ def label_run(
         registry = load_registry(directory)
         working = registry if commit else copy.deepcopy(registry)
         result = assign_labels(
-            working, track, definition, partition, run_id=run_id, run_date=run_date, prefix=prefix
+            working, track, definition, partition,
+            run_id=run_id, run_date=run_date, prefix=prefix, eligible=eligible,
         )
         if not commit:
             def mask(label: str) -> str:

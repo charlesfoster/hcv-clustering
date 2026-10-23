@@ -216,6 +216,16 @@ pixi run hcv-cluster run -i samples.fasta \
 
 Each small-multiple panel has identical node positions, so topology can be compared directly while colour carries only one meaning per panel. Small multiples cannot be combined with composite node-encoding flags. `--plot-node-spacing` accepts `compact`, `normal` (default), or `expanded`; it applies deterministic collision removal before components are packed.
 
+### Cluster sizes by patient
+
+Several sequences from one person (a re-test, a serial sample) are not evidence of transmission. If your metadata has a column identifying the person, name it with `--patient-column`:
+
+```bash
+pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-column patient_id
+```
+
+`cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences` and `cluster_patients` as well, with or without this option. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
+
 ### GUI
 
 A Streamlit GUI wraps the same pipeline for users who prefer not to use the command line:

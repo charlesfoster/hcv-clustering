@@ -171,6 +171,7 @@ def command_run(args: argparse.Namespace) -> int:
     )
     plotting.validate_plot_fields(args, metadata_rows)
     _check_label_options(args)
+    stages.check_patient_column(metadata_rows, args.patient_column)
 
     if args.dry_run:
         genotype_argv_display = [
@@ -478,15 +479,17 @@ def command_run(args: argparse.Namespace) -> int:
     primary_links_csv = outdir / "links.csv"
     variants_csv = outdir / variants.VARIANTS_FILENAME
     stages.merge_tables(
-        dict(cluster_tables), dict(link_tables), primary_clusters_csv, primary_links_csv, variants_csv
+        dict(cluster_tables), dict(link_tables), primary_clusters_csv, primary_links_csv, variants_csv,
+        metadata_rows, args.patient_column,
     )
     if args.distance == "both":
         stages.merge_tables(
             dict(snp_cluster_tables), dict(snp_link_tables),
             outdir / "clusters.snp.csv", outdir / "links.snp.csv", variants_csv,
+            metadata_rows, args.patient_column,
         )
     for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables]:
-        stages.annotate_clusters(clusters_path, variants_csv)
+        stages.annotate_clusters(clusters_path, variants_csv, metadata_rows, args.patient_column)
 
     if args.registry is not None:
         _apply_cluster_labels(args, outdir, primary_clusters_csv)
@@ -684,6 +687,16 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
             "only the one with the best clustering-region coverage (ties: most complete), "
             "or only the most complete. Variants of different genotypes are all kept. "
             "(default: region-coverage)"
+        ),
+    )
+    run_parser.add_argument(
+        "--patient-column",
+        metavar="COLUMN",
+        default=None,
+        help=adv(
+            "Metadata column identifying the person. Clusters are then sized by distinct "
+            "patients, so several sequences from one patient are not a cluster and get no "
+            "persistent label. cluster_sequences and cluster_patients are always reported."
         ),
     )
     run_parser.add_argument(

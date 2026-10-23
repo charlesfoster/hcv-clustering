@@ -27,6 +27,8 @@ RESERVED_METADATA_COLUMNS = frozenset(
         "cluster_label",
         "source_cluster_id",
         "cluster_size",
+        "cluster_sequences",
+        "cluster_patients",
         "source",
         "target",
         "distance",

@@ -40,7 +40,7 @@ workflow HCV_CLUSTER {
 
     // distance: tn93 | snp | both (tn93 is then primary and snp is reported alongside).
     def methods = params.distance == 'both' ? ['tn93', 'snp'] : [params.distance]
-    CLUSTER(SELECT_VARIANTS.out.clustering.combine(Channel.fromList(methods)), RESOLVE_IDS.out.variants)
+    CLUSTER(SELECT_VARIANTS.out.clustering.combine(Channel.fromList(methods)), RESOLVE_IDS.out.variants, metadata)
 
     // Group by method -> one merge each. ifEmpty keeps the audit running when nothing clustered.
     tables = CLUSTER.out.clusters.mix(CLUSTER.out.links)
@@ -48,7 +48,7 @@ workflow HCV_CLUSTER {
         .map { method, files -> tuple(method, files.flatten()) }
     merge_in = Channel.fromList(methods).map { m -> tuple(m, m) }
         .join(tables, remainder: true).map { m, _m, files -> tuple(m, files ?: []) }
-    MERGE(merge_in, RESOLVE_IDS.out.variants)
+    MERGE(merge_in, RESOLVE_IDS.out.variants, metadata)
 
     primary = MERGE.out.clusters.filter { method, f -> method == methods[0] }
     if (params.registry) {

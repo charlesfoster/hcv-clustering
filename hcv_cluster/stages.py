@@ -207,21 +207,87 @@ def merge_tables(
     out_clusters: Path,
     out_links: Path,
     variants_csv: Path | None = None,
+    metadata_rows: Sequence[Mapping[str, Any]] = (),
+    patient_column: str | None = None,
 ) -> None:
     """Merge per-subtype tables into genotype-qualified, run-wide ones."""
     workflow.merge_cluster_tables(sorted(cluster_tables.items()), out_clusters)
     workflow.merge_link_tables(sorted(link_tables.items()), out_links)
-    annotate_clusters(out_clusters, variants_csv)
+    annotate_clusters(out_clusters, variants_csv, metadata_rows, patient_column)
 
 
-def annotate_clusters(clusters_csv: Path, variants_csv: Path | None) -> None:
-    """Add base_sample_id / mixed_infection (identity values when nothing was renamed)."""
+def annotate_clusters(
+    clusters_csv: Path,
+    variants_csv: Path | None,
+    metadata_rows: Sequence[Mapping[str, Any]] = (),
+    patient_column: str | None = None,
+) -> None:
+    """Add base_sample_id / mixed_infection and the sequence and patient counts per cluster."""
     plan = (
         variants.read_variants_csv(variants_csv)
         if variants_csv is not None
         else variants.VariantPlan(records=[])
     )
     variants.annotate_cluster_table(clusters_csv, plan)
+    apply_patient_sizes(clusters_csv, metadata_rows, patient_column)
+
+
+def check_patient_column(metadata_rows: Sequence[Mapping[str, Any]], patient_column: str | None) -> None:
+    if patient_column is None:
+        return
+    if not metadata_rows:
+        raise ValueError("--patient-column needs --metadata")
+    if patient_column not in metadata.metadata_fields(metadata_rows):
+        raise ValueError(
+            f"--patient-column '{patient_column}' is not a metadata column "
+            f"(available: {', '.join(metadata.metadata_fields(metadata_rows))})"
+        )
+
+
+def apply_patient_sizes(
+    clusters_csv: Path,
+    metadata_rows: Sequence[Mapping[str, Any]],
+    patient_column: str | None,
+) -> None:
+    """Count each cluster's sequences and patients; with a patient column, size by patients.
+
+    Several sequences from one person (a re-test, a serial sample) are not transmission
+    evidence, so with ``patient_column`` set ``cluster_size`` is the number of distinct
+    patients: a cluster holding one patient behaves like a singleton in plots and gets no
+    persistent label. A sample without a patient value counts as its own patient. Without a
+    patient column ``cluster_size`` is the number of sequences.
+    """
+    check_patient_column(metadata_rows, patient_column)
+    rows = read_csv_rows(clusters_csv)
+    with clusters_csv.open(newline="", encoding="utf-8") as handle:
+        fieldnames = list(csv.DictReader(handle).fieldnames or ())
+    patient_of: dict[str, str] = {}
+    if patient_column:
+        for record in metadata_rows:
+            value = str(record.get(patient_column) or "").strip()
+            if value and value != metadata.MISSING_VALUE:
+                patient_of[str(record["sample_id"])] = value
+
+    def patient(row: Mapping[str, str]) -> str:
+        key = row.get(variants.BASE_SAMPLE_FIELD) or row["sample_id"]
+        return patient_of.get(key, key)
+
+    sequences: dict[str, int] = {}
+    patients: dict[str, set[str]] = {}
+    for row in rows:
+        sequences[row["cluster_id"]] = sequences.get(row["cluster_id"], 0) + 1
+        patients.setdefault(row["cluster_id"], set()).add(patient(row))
+    for extra in ("cluster_sequences", "cluster_patients"):
+        if extra not in fieldnames:
+            fieldnames.append(extra)
+    for row in rows:
+        row["cluster_sequences"] = sequences[row["cluster_id"]]
+        row["cluster_patients"] = len(patients[row["cluster_id"]])
+        row["cluster_size"] = row["cluster_patients"] if patient_column else row["cluster_sequences"]
+    with clusters_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 # --- label ------------------------------------------------------------------------------
@@ -278,6 +344,8 @@ def label_clusters(
         fieldnames = list(csv.DictReader(handle).fieldnames or ())
     base = variants.BASE_SAMPLE_FIELD
     partition = {(row["genotype"], row.get(base) or row["sample_id"]): row["cluster_id"] for row in rows}
+    # Only clusters of two or more sequences (patients, when sized by patient) earn a label.
+    eligible = {row["cluster_id"] for row in rows if int(row.get("cluster_size") or 1) > 1}
     now = datetime.datetime.now()
     result, table, _registry = labels.label_run(
         registry,
@@ -290,6 +358,7 @@ def label_clusters(
         commit=update_registry,
         prefix=prefix,
         output_directory=registry_out,
+        eligible=eligible,
     )
     if "cluster_label" not in fieldnames:
         fieldnames.insert(fieldnames.index("cluster_id") + 1, "cluster_label")
@@ -447,6 +516,12 @@ def _load_metadata(path: Path | None) -> list[dict[str, Any]]:
     return metadata.load_metadata_csv(path) if path is not None else []
 
 
+def _add_patient_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--metadata", type=Path, default=None)
+    parser.add_argument("--patient-column", default=None,
+                        help="Metadata column identifying the person; clusters are then sized by patients")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hcv-stage",
@@ -495,6 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--extra-tn93-args", default="")
     p.add_argument("--variants", type=Path, default=None,
                    help="sequence_variants.csv, to add base_sample_id / mixed_infection columns")
+    _add_patient_arguments(p)
     p.add_argument("--verbose", action="store_true")
     p.set_defaults(func=_cmd_cluster)
 
@@ -506,6 +582,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "and <genotype>.<method>.links.csv files")
     p.add_argument("--method", default="tn93", help="Method name used in --tables-dir file names")
     p.add_argument("--variants", type=Path, default=None)
+    _add_patient_arguments(p)
     p.add_argument("--out-clusters", type=Path, required=True)
     p.add_argument("--out-links", type=Path, required=True)
     p.set_defaults(func=_cmd_merge)
@@ -626,7 +703,7 @@ def _cmd_cluster(args: argparse.Namespace) -> int:
         extra_tn93_args=args.extra_tn93_args,
         quiet=not args.verbose,
     )
-    annotate_clusters(args.out_clusters, args.variants)
+    annotate_clusters(args.out_clusters, args.variants, _load_metadata(args.metadata), args.patient_column)
     print(f"{args.method} threshold {threshold:.4g}")
     return 0
 
@@ -648,6 +725,8 @@ def _cmd_merge(args: argparse.Namespace) -> int:
         args.out_clusters,
         args.out_links,
         args.variants,
+        _load_metadata(args.metadata),
+        args.patient_column,
     )
     return 0
 

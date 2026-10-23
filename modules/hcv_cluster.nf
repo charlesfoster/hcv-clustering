@@ -8,6 +8,10 @@
 // The package is run from params.code_dir (the repository, or /opt/hcv-cluster in the container).
 def py(module) { "PYTHONPATH=${params.code_dir} python -m hcv_cluster.${module}" }
 def stage(name) { "${py('stages')} ${name}" }
+// Cluster sizes count patients when a metadata column identifying them is configured.
+def patientArgs(metadata) {
+    params.patient_column && metadata.name != "NO_FILE" ? "--metadata ${metadata} --patient-column ${params.patient_column}" : ""
+}
 def optionally(flag, value) { value != null && value != "" ? "${flag} ${value}" : "" }
 
 // The primary metric owns clusters.csv / links.csv; with --distance both, snp is secondary.
@@ -132,6 +136,7 @@ process CLUSTER {
     input:
     tuple val(genotype), path(clustering_fasta), val(method)
     path variants
+    path metadata
 
     output:
     tuple val(method), path("${genotype}.${method}.clusters.csv"), emit: clusters
@@ -145,7 +150,7 @@ process CLUSTER {
         --out-distances ${genotype}.${method}.distances.csv \\
         --out-links ${genotype}.${method}.links.csv \\
         --out-clusters ${genotype}.${method}.clusters.csv \\
-        --variants ${variants} \\
+        --variants ${variants} ${patientArgs(metadata)} \\
         --region ${params.region ?: 'e1-e2'} \\
         ${optionally('--threshold', params.threshold)} \\
         ${optionally('--snp-count-threshold', params.snp_count_threshold)} \\
@@ -171,6 +176,7 @@ process MERGE {
     input:
     tuple val(method), path("tables/*")
     path variants
+    path metadata
 
     output:
     tuple val(method), path("${method}.clusters.csv"), emit: clusters
@@ -178,7 +184,7 @@ process MERGE {
 
     script:
     """
-    ${stage('merge')} --tables-dir tables --method ${method} --variants ${variants} \\
+    ${stage('merge')} --tables-dir tables --method ${method} --variants ${variants} ${patientArgs(metadata)} \\
         --out-clusters ${method}.clusters.csv --out-links ${method}.links.csv
     """
 }

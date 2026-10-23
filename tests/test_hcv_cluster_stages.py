@@ -110,3 +110,38 @@ def test_stage_chain_produces_labelled_clusters_and_a_complete_audit(tmp_path: P
     assert sum(1 for r in audit.values() if r["failed_stage"] == "input") == 1  # the repeat
     survivors = (tmp_path / "out" / "surviving_samples.fasta").read_text()
     assert ">b|1a|HCV-2610-001" in survivors and ">d|1a|singleton" in survivors
+
+
+def test_clusters_are_sized_by_patients_and_one_patient_earns_no_label(tmp_path: Path) -> None:
+    # p1 has two sequences (two sample IDs); p2 and p3 one each.
+    # Cluster 1: s1+s2 (both p1) -> one patient. Cluster 2: s3+s4 (p2, p3) -> two patients.
+    clusters = tmp_path / "clusters.csv"
+    clusters.write_text(
+        "sample_id,genotype,cluster_id,source_cluster_id,cluster_size\n"
+        "s1,1a,1a_C0001,C0001,2\ns2,1a,1a_C0001,C0001,2\n"
+        "s3,1a,1a_C0002,C0002,2\ns4,1a,1a_C0002,C0002,2\n"
+    )
+    metadata = [{"sample_id": s, "patient": p} for s, p in
+                (("s1", "p1"), ("s2", "p1"), ("s3", "p2"), ("s4", "p3"))]
+    stages.annotate_clusters(clusters, None, metadata, "patient")
+    rows = {r["sample_id"]: r for r in _rows(clusters)}
+    assert (rows["s1"]["cluster_size"], rows["s1"]["cluster_sequences"], rows["s1"]["cluster_patients"]) == ("1", "2", "1")
+    assert (rows["s3"]["cluster_size"], rows["s3"]["cluster_sequences"], rows["s3"]["cluster_patients"]) == ("2", "2", "2")
+
+    stages.label_clusters(
+        clusters, registry=tmp_path / "reg", update_registry=True, track="tn93",
+        definition={"metric": "tn93"}, prefix="HCV", label_date="2026-10-23",
+        out_clusters=tmp_path / "labelled.csv", out_labels=tmp_path / "labels.csv", out_changes=tmp_path / "changes.csv",
+    )
+    labelled = {r["sample_id"]: r["cluster_label"] for r in _rows(tmp_path / "labelled.csv")}
+    assert labelled == {"s1": "", "s2": "", "s3": "HCV-2610-001", "s4": "HCV-2610-001"}
+
+    # Without a patient column the same table is sized by sequences, and a missing column is an error.
+    stages.annotate_clusters(clusters, None, metadata, None)
+    assert {r["cluster_size"] for r in _rows(clusters)} == {"2"}
+    try:
+        stages.annotate_clusters(clusters, None, metadata, "no_such_column")
+    except ValueError as exc:
+        assert "no_such_column" in str(exc)
+    else:
+        raise AssertionError("an unknown patient column must be rejected")

@@ -8,6 +8,7 @@ version = "0.2.0"
 [tasks]
 hcv-cluster = "python -m hcv_cluster"
 hcv-stage = "python -m hcv_cluster.stages"
+hcv-report = "python -m hcv_cluster.report"
 hcv-cluster-gui = "streamlit run streamlit_app.py"
 hcv-workflow = "python -m hcv_cluster.workflow"
 test = "pytest"

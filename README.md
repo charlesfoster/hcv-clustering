@@ -226,6 +226,19 @@ pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-colu
 
 `cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences`, `cluster_samples` and `cluster_patients` as well, with or without this option. `--sample-column` names a column identifying the physical sample (one patient can give several), so that `cluster_samples` counts distinct samples. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
 
+### One-page progress report
+
+`hcv-report RUN_DIR` (or `pixi run hcv-report RUN_DIR`) writes `RUN_DIR/report.html`: an A4 summary for a regular update. It is a standalone command that is **not** part of a pipeline run: run it when you want a report, pointing it at the output folder of a finished run. Open the HTML in a browser and print it to PDF. It reads files the run already wrote (`sample_audit.csv`, `metadata.surviving_samples.csv`, `links.csv`, and where present `label_changes.csv` and `run_info.json`). It has two bands:
+
+- **Sequence information:** the funnel (samples collected, sequenced, passed QC and genotyped, in a cluster); sequences by collection month (a column named `sample_collection_date`, `collection_date` or `DOC`, or one named with `--date-column`); and who is in the data, from metadata columns recognised by name: age bands with the median, sex (`sex` or `gender`), Indigenous status (`indigenous_status`, pooled to Aboriginal and/or Torres Strait Islander versus neither), injecting drug use in recency bins (`injecting_status`) and how diagnosed (`how_diagnosed` or `reason_for_test`), each with the share of the group found in a cluster. Missing values are shown as "Not recorded", and demographic groups under `--min-cell` sequences (default 5) are pooled. Each column has an option to name a differently titled column (`--injecting-column`, `--indigenous-column` and so on). The "samples collected" figure is a placeholder (it equals the sequences received) until collected counts are available.
+- **Cluster information:** cluster statistics; a by-location table with every location (a column named `location`, `site` or `setting`, or one named with `--location-column`), where a cluster counts at every location it includes; a map of the five largest clusters coloured by location and drawn without a browser, so it works in the container; cluster timelines (a row per mapped cluster, a dot per sequence by collection date); and a table of those clusters by persistent label, keyed a to e to match the map, with each cluster's first and last sample and a dot showing whether it is active (a sample in the last `--active-months`, default 6, counted back from the latest sample in the data).
+
+The two time charts show the whole study, up to the last 36 months; older sequences are left off (the caption says how many) and clusters that continue earlier get an arrow. `--chart-months N` or `--chart-from YYYY-MM-DD` set the window. The map, timelines and table show the largest clusters of all time, even if inactive; `--active-only` limits them to active clusters.
+
+With `--since PREV_RUN_DIR`, the output folder of the run behind the last report (made with the same `--registry`), the funnel shows the sequences added since, the largest clusters show their change (`+2`, or NEW), new sequences are ringed on the map, and the headline figures count new and grown clusters. Clusters are matched by persistent label. Without it, the page says what the registry recorded for the latest run (needs a run made with `--registry`).
+
+The report reads the metadata the run itself used, through the `metadata.surviving_samples.csv` the run writes, so it needs no separate metadata argument and always matches the clustering. It shows counts only, with no sample identifiers. `--title`, `--logo FILE` and `--report-date` set the heading, logo and date on the page (default: today), and `--out` writes it elsewhere. Sections whose data are missing (no metadata, dates, locations or registry) are left out.
+
 ### GUI
 
 A Streamlit GUI wraps the same pipeline for users who prefer not to use the command line:
@@ -515,6 +528,7 @@ hcv_cluster/            the Python package (also pip-installable: pyproject.toml
   prep.py               MAFFT alignment and region extraction
   methods.py            region thresholds, SNP distance
   plotting.py           network plots (CLI flags and the plot stage)
+  report.py             the standalone one-page HTML progress report (hcv-report)
   variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py
   data/                 genotype panel, ICTV table, bundled GenBank references
 streamlit_app.py        GUI entry point

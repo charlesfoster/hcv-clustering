@@ -9,6 +9,14 @@ change which sequences cluster together for the same input is called out as **re
 First versioned release, and the first that can run as a Nextflow pipeline.
 
 ### Added
+- **One-page progress report** (`hcv-report RUN_DIR`): a standalone command, run only when a report is wanted and
+  not a step of the pipeline. Writes `report.html`, an A4 summary of a finished run: the sequence funnel, cluster
+  statistics, age, sex, Indigenous status, injecting and diagnosis breakdowns from the metadata, collection months,
+  a by-location table, a map of the five largest clusters and registry changes since the last report.
+  `--since PREV_RUN_DIR` flags new and grown clusters and new sequences relative to the run behind the last report.
+  The time charts show the last 36 months by default (`--chart-months`, `--chart-from`); the largest-clusters
+  table shows each cluster's first and last sample and whether it is active, and `--active-only` limits the map,
+  timelines and table to active clusters. Counts only: no sample identifiers.
 - **Nextflow workflow** (`main.nf`, `workflows/`, `modules/`) with a reusable `HCV_CLUSTER` subworkflow, a
   Docker image built from `pixi.lock`, `-resume`, alignment reuse (`--reuse_alignments`) and network plots.
   Its tables are identical to `hcv-cluster run` (guarded by `tests/test_nextflow_parity.py`).

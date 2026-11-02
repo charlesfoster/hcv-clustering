@@ -169,8 +169,13 @@ def _normalized_component_layout(
     ordered = sorted(nodes)
     if len(ordered) == 1:
         return {ordered[0]: (0.0, 0.0)}
+    # A subgraph view iterates its nodes in set order, which changes with every Python process
+    # (hash randomisation) and with it the layout; a graph built in sorted order does not.
+    component = nx.Graph()
+    component.add_nodes_from(ordered)
+    component.add_edges_from(sorted(tuple(sorted(edge)) for edge in graph.subgraph(ordered).edges()))
     raw = nx.spring_layout(
-        graph.subgraph(ordered),
+        component,
         seed=_stable_seed("|".join(ordered), seed),
         k=1 / math.sqrt(len(ordered)),
     )

@@ -20,6 +20,7 @@ gui = ["hcv-cluster[viz]", "streamlit>=1.32"]
 [project.scripts]
 hcv-cluster = "hcv_cluster.cli:main"
 hcv-stage = "hcv_cluster.stages:main"
+hcv-report = "hcv_cluster.report:main"
 hcv-workflow = "hcv_cluster.workflow:main"
 
 [tool.hatch.version]

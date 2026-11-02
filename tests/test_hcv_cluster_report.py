@@ -1,0 +1,162 @@
+import csv
+import datetime
+import json
+from collections import Counter
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from hcv_cluster import report
+
+
+def _write(path: Path, fieldnames: list[str], rows: list[dict]) -> Path:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def _run_dir(tmp_path: Path, *, metadata: bool = True, registry: bool = True, name: str = "run",
+             without: tuple[str, ...] = ()) -> Path:
+    """A finished run: ten sequences received, two fail, eight are analysed (``without`` leaves some out, as an earlier run would)."""
+    people = [  # sample, cluster, location, collected, age, sex, injecting, indigenous
+        ("SMP-A1", "1a_C0001", "Clinic X", "5-Mar-24", "22", "M", "Last month", "Aboriginal"),
+        ("SMP-A2", "1a_C0001", "Clinic X", "9-Mar-24", "31", "M", "Last 6 months", "Neither"),
+        ("SMP-A3", "1a_C0001", "Clinic Y", "2-Apr-24", "", "F", "Unknown", "Torres Strait Islander"),
+        ("SMP-B1", "1a_C0002", "Clinic X", "7-May-24", "40", "M", "Never", "Neither"),
+        ("SMP-B2", "1a_C0002", "Clinic X", "9-May-24", "58", "M", "Last month", "Aboriginal"),
+        ("SMP-S1", "1a_C0003", "Clinic Z", "1-Jun-24", "35", "F", "Never", "Neither"),
+        ("SMP-S2", "1a_C0004", "Clinic Z", "2-Jun-24", "36", "F", "Last month", "Aboriginal"),
+        ("SMP-S3", "1a_C0005", "Clinic W", "3-Jun-24", "29", "M", "Last 2 years", "Neither"),
+    ]
+    people = [p for p in people if p[0] not in without]
+    size = Counter(p[1] for p in people)
+    fields = ["sample_id", "genotype", "cluster_id", "cluster_label", "cluster_size"]
+    rows = [{"sample_id": s, "genotype": "1a", "cluster_id": c, "cluster_label": f"HCV-{c[-4:]}" if size[c] > 1 else "",
+             "cluster_size": size[c], "Location": loc, "sample_collection_date": d, "Age": age, "Gender": sex,
+             "injecting_status": inj, "indigenous_status": ind}
+            for s, c, loc, d, age, sex, inj, ind in people]
+    if metadata:
+        fields += ["Location", "sample_collection_date", "Age", "Gender", "injecting_status", "indigenous_status"]
+    else:
+        rows = [{k: r[k] for k in fields} for r in rows]
+    run = tmp_path / name
+    run.mkdir()
+    _write(run / "metadata.surviving_samples.csv", fields, rows)
+    _write(run / "sample_audit.csv", ["sample_id", "overall_status", "failed_stage"],
+           [{"sample_id": p[0], "overall_status": "pass", "failed_stage": ""} for p in people]
+           + [{"sample_id": "SMP-F1", "overall_status": "fail", "failed_stage": "genotyping"},
+              {"sample_id": "SMP-F2", "overall_status": "fail", "failed_stage": "region_qc"}])
+    _write(run / "links.csv", ["source", "target", "distance"], [
+        {"source": "SMP-A1", "target": "SMP-A2", "distance": "0.01"}, {"source": "SMP-A3", "target": "SMP-A2", "distance": "0.02"},
+        {"source": "SMP-B1", "target": "SMP-B2", "distance": "0.01"}])
+    (run / "run_info.json").write_text(json.dumps({"created": "2026-10-28T01:00:00", "parameters": {"region": "e1-e2"}}))
+    if registry:
+        _write(run / "label_changes.csv", ["event", "label"], [{"event": "created", "label": "HCV-C0001"}, {"event": "created", "label": "HCV-C0002"}])
+    return run
+
+
+def test_report_summarises_a_run_and_shows_no_identifiers(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path)
+    page = report.build_report(run, min_cell=3, title="Test update").read_text()
+    assert (run / "report.html").exists()  # the default place
+    assert "<b>10</b><span>sequenced" in page and "<b>8</b><span>passed QC" in page and "<b>5</b><span>in a cluster" in page
+    assert "Sequence information" in page and "Cluster information" in page and "region" not in page.split("<footer>")[0].lower()
+    assert "<b>2</b><span>clusters (2+ sequences)" in page and "<b>1</b><span>across 2+ locations" in page  # cluster A: Clinic X and Y
+    assert all(f"Clinic {c}" in page for c in "XYZW") and "Other sites" not in page  # every location has its own row
+    assert "Who is in the data" in page and "median 35, IQR" in page and "Male" in page
+    assert "Samples collected Mar 2024 to Jun 2024" in page and "time charts from" not in page  # the header says what the data cover
+    assert "Injecting drug use" in page and "Last 6 months" in page and "Indigenous status" in page
+    assert "Aboriginal and/or TSI" in page and "Torres Strait Islander" not in page  # any Aboriginal or TSI answer is pooled
+    assert "Sequences by collection month" in page and "Cluster timelines" in page and "Cluster map" in page
+    assert "<td class='key'>a</td><td>HCV-0001</td>" in page and "<td class='key'>b</td><td>HCV-0002</td>" in page  # the map's keys
+    assert "<b>–</b><span>new clusters since last report" in page and "first run in this registry" in page  # a first run has nothing to compare with
+    assert "SMP-" not in page  # counts only, never a sample identifier
+
+
+def test_report_leaves_out_what_the_run_has_no_data_for(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path, metadata=False, registry=False)
+    page = report.build_report(run).read_text()
+    for absent in ("By location", "Who is in the data", "collection month", "across 2+ locations"):
+        assert absent not in page
+    assert "colour is subtype" in page and "not tracked" in page
+    with pytest.raises(ValueError, match="'Ward' is not a column"):
+        report.build_report(run, location_column="Ward")
+    with pytest.raises(FileNotFoundError, match="is it a finished run"):
+        report.build_report(tmp_path)
+
+
+def test_report_flags_growth_since_an_earlier_run(tmp_path: Path) -> None:
+    now = _run_dir(tmp_path)
+    earlier = _run_dir(tmp_path, name="earlier", without=("SMP-A3", "SMP-B1", "SMP-B2"))  # cluster A had two members; B did not exist
+    page = report.build_report(now, since=earlier).read_text()
+    assert "<b>8 <em>+3</em></b><span>passed QC" in page  # eight sequences, three of them new
+    assert "<b>1</b><span>new clusters since last report" in page and "<b>1</b><span>existing clusters that grew" in page
+    assert "<b class='new'>NEW</b>" in page and "<td class='num up'>+1</td>" in page and "3 new sequences" in page
+    assert page.count('r="5.2" fill="none"') == 6  # the three new sequences are circled on the map and on the timelines
+    assert "<em>" not in report.build_report(now).read_text()  # without --since nothing is flagged
+    unlabelled = _run_dir(tmp_path, name="unlabelled", without=("SMP-A1", "SMP-A2", "SMP-B1", "SMP-B2"))
+    with pytest.raises(ValueError, match="persistent cluster labels"):
+        report.build_report(unlabelled, since=earlier)
+
+
+def test_report_finds_the_collection_date_column_by_name(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path)
+    table = run / "metadata.surviving_samples.csv"
+    rows = list(csv.DictReader(table.open()))
+    _write(table, [("DOC" if f == "sample_collection_date" else f) for f in rows[0]],
+           [{("DOC" if k == "sample_collection_date" else k): v for k, v in r.items()} for r in rows])
+    assert "Sequences by collection month" in report.build_report(run).read_text()  # DOC is recognised
+    assert "Sequences by collection month" not in report.build_report(run, date_column="Age").read_text()  # a named column wins (no dates in it)
+
+
+def test_time_charts_show_at_most_36_months_unless_told_otherwise() -> None:
+    first, latest = (2020, 1), (2026, 9)
+    assert report._window_start(first, latest, None, None) == (2023, 10)  # the automatic cap: 36 months ending in Sep 2026
+    assert report._window_start((2025, 6), latest, None, None) == (2025, 6)  # a short study is shown whole
+    assert report._window_start(first, latest, None, 12) == (2025, 10)
+    assert report._window_start(first, latest, datetime.date(2022, 3, 9), None) == (2022, 3)  # a date sets the month it falls in
+    assert report._window_start(first, latest, datetime.date(2019, 1, 1), None) == first  # never before the first sample
+
+
+def test_report_windows_the_charts_and_flags_active_clusters(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path)  # samples are collected 5 Mar to 3 Jun 2024; cluster A last on 2 Apr and B on 9 May
+    windowed = report.build_report(run, chart_from=datetime.date(2024, 5, 1)).read_text()
+    assert "3 earlier not shown" in windowed and "◂ = continues earlier" in windowed
+    assert "Samples collected Mar 2024 to Jun 2024 · time charts from May 2024" in windowed  # the header keeps the two ranges apart  # the Mar/Apr sequences are off the chart
+    assert "earlier not shown" not in report.build_report(run).read_text()
+    page = report.build_report(run, active_months=1).read_text()  # active: a sample since 3 May
+    assert "<i class='dot off'></i>Apr ’24" in page and "<i class='dot on'></i>May ’24" in page  # A is inactive, B active
+    only = report.build_report(run, active_months=1, active_only=True).read_text()
+    assert "<td class='key'>a</td><td>HCV-0002</td>" in only and "HCV-0001" not in only and "active clusters only" in only
+    with pytest.raises(ValueError, match="needs collection dates"):
+        report.build_report(_run_dir(tmp_path, metadata=False, name="nodates"), active_only=True)
+
+
+def test_report_is_a_standalone_command(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path)
+    out = tmp_path / "elsewhere" / "update.html"
+    assert report.main([str(run), "--out", str(out), "--report-date", "2026-11-02"]) == 0
+    assert "2 November 2026" in out.read_text()
+    with pytest.raises(SystemExit):  # a bad date is refused rather than written
+        report.main([str(run), "--report-date", "soon"])
+
+
+def test_cluster_map_layout_does_not_depend_on_the_python_process() -> None:
+    code = (
+        "from hcv_cluster import viz\n"
+        "rows = [{'sample_id': s, 'cluster_id': 'c'} for s in 'abcdefgh']\n"
+        "edges = [{'source': a, 'target': b, 'distance': '0.01'} for a, b in "
+        "[('a','b'),('b','c'),('c','d'),('d','e'),('e','f'),('a','h'),('g','h')]]\n"
+        "p = viz.compute_network_layout(rows, edges, mode='components')\n"
+        "print(round(p['a'][0], 4), round(p['h'][1], 4))\n"
+    )
+    outputs = {
+        subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
+                       env={"PYTHONHASHSEED": str(seed), "PATH": ""}).stdout
+        for seed in (1, 2, 3, 4)
+    }
+    assert len(outputs) == 1

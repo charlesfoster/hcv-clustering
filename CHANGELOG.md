@@ -49,6 +49,9 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 - Reference records for all 84 catalogued subtypes ship with the package; no network access is needed.
 
 ### Changed
+- The pixi tasks are now just `hcv-cluster`, `hcv-report`, `hcv-init`, `hcv-cluster-gui` and `test`. `hcv-stage`, `hcv-workflow`
+  and `hcv-nextflow` are gone: run `pixi run python -m hcv_cluster.stages` or `.workflow`, and
+  `pixi run -e nf nextflow run main.nf`. The `hcv-stage` and `hcv-workflow` commands of a pip install are unchanged.
 - **Results-affecting:** default threshold is now chosen by region and distance metric (0.045 for the default
   `e1-e2`), not by genotype; default region is `e1-e2`; TN93 ambiguity handling defaults to `average`;
   minimap2 preset `asm20`.

@@ -290,7 +290,7 @@ include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
 HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
 ```
 
-The stages are also available as `pixi run hcv-stage <stage>` (or `python -m hcv_cluster.stages <stage>`) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
+The stages are also available as `pixi run python -m hcv_cluster.stages <stage>` (or the `hcv-stage` command in a pip install) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
 
 **Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
 
@@ -463,12 +463,12 @@ Distances and clusters are computed **separately for each genotype**. Mixing gen
 
 ## Advanced: stage-by-stage commands
 
-The `hcv-workflow` entry point exposes each pipeline stage independently for debugging or custom pipelines.
+The `hcv_cluster.workflow` module (the `hcv-workflow` command in a pip install) exposes each pipeline stage independently for debugging or custom pipelines.
 
 **Assign genotypes:**
 
 ```bash
-pixi run hcv-workflow genotype \
+pixi run python -m hcv_cluster.workflow genotype \
   --input samples.fasta \
   --output-csv results/genotypes.csv \
   --outdir results
@@ -494,7 +494,7 @@ combined segments in `alignment_segment_count`, and the input sequence's
 **Prepare a genotype-specific clustering FASTA:**
 
 ```bash
-pixi run hcv-workflow prep \
+pixi run python -m hcv_cluster.workflow prep \
   --input samples.fasta \
   --genotype 1a \
   --out-prefix results/hcv_1a
@@ -503,13 +503,13 @@ pixi run hcv-workflow prep \
 **Pre-cache reference records:**
 
 ```bash
-pixi run hcv-workflow prep-refs --genotype all
+pixi run python -m hcv_cluster.workflow prep-refs --genotype all
 ```
 
 **Run TN93 on an aligned FASTA:**
 
 ```bash
-pixi run hcv-workflow tn93 \
+pixi run python -m hcv_cluster.workflow tn93 \
   --input results/hcv_1a.clustering.fasta \
   --output results/tn93.csv \
   --tn93-threshold 1.0
@@ -518,7 +518,7 @@ pixi run hcv-workflow tn93 \
 **Create linked pairs from a distance table:**
 
 ```bash
-pixi run hcv-workflow link \
+pixi run python -m hcv_cluster.workflow link \
   --distances results/tn93.csv \
   --output results/links.csv \
   --threshold 0.03
@@ -527,7 +527,7 @@ pixi run hcv-workflow link \
 **Build clusters from linked pairs:**
 
 ```bash
-pixi run hcv-workflow cluster \
+pixi run python -m hcv_cluster.workflow cluster \
   --links results/links.csv \
   --nodes-fasta results/hcv_1a.clustering.fasta \
   --output results/clusters.csv

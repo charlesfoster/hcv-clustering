@@ -228,16 +228,16 @@ pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-colu
 
 ### One-page progress report
 
-`hcv-report RUN_DIR` (or `pixi run hcv-report RUN_DIR`) writes `RUN_DIR/report.html`: an A4 summary for a regular update. It is a standalone command that is **not** part of a pipeline run: run it when you want a report, pointing it at the output folder of a finished run. Open the HTML in a browser and print it to PDF. It reads files the run already wrote (`sample_audit.csv`, `metadata.surviving_samples.csv`, `links.csv`, and where present `label_changes.csv` and `run_info.json`). It has two bands:
+`hcv-report RUN_DIR` (or `pixi run hcv-report RUN_DIR`) writes `RUN_DIR/report.html`: an A4 summary for a regular update. It is a standalone command, run on demand against the output folder of a finished run; `hcv-cluster run --generate-report` (or the tick box in the GUI, or `generate_report = true` in your settings) runs it for you at the end of a run, and never off by surprise: it is off unless asked for. Open the HTML in any browser and click its **Save as PDF** button (it opens the browser's print window; choose "Save as PDF"), or let `--pdf` / `--generate-report` make the PDF directly where Chrome or Chromium is installed. It reads files the run already wrote (`sample_audit.csv`, `metadata.surviving_samples.csv`, `links.csv`, and where present `label_changes.csv` and `run_info.json`). It has two bands:
 
 - **Sequence information:** the funnel (samples collected, sequenced, passed QC and genotyped, in a cluster); sequences by collection month (a column named `sample_collection_date`, `collection_date` or `DOC`, or one named with `--date-column`); and who is in the data, from metadata columns recognised by name: age bands with the median, sex (`sex` or `gender`), Indigenous status (`indigenous_status`, pooled to Aboriginal and/or Torres Strait Islander versus neither), injecting drug use in recency bins (`injecting_status`) and how diagnosed (`how_diagnosed` or `reason_for_test`), each with the share of the group found in a cluster. Missing values are shown as "Not recorded", and demographic groups under `--min-cell` sequences (default 5) are pooled. Each column has an option to name a differently titled column (`--injecting-column`, `--indigenous-column` and so on). The "samples collected" figure is a placeholder (it equals the sequences received) until collected counts are available.
 - **Cluster information:** cluster statistics; a by-location table with every location (a column named `location`, `site` or `setting`, or one named with `--location-column`), where a cluster counts at every location it includes; a map of the five largest clusters coloured by location and drawn without a browser, so it works in the container; cluster timelines (a row per mapped cluster, a dot per sequence by collection date); and a table of those clusters by persistent label, keyed a to e to match the map, with each cluster's first and last sample and a dot showing whether it is active (a sample in the last `--active-months`, default 6, counted back from the latest sample in the data).
 
 The two time charts show the whole study, up to the last 36 months; older sequences are left off (the caption says how many) and clusters that continue earlier get an arrow. `--chart-months N` or `--chart-from YYYY-MM-DD` set the window. The map, timelines and table show the largest clusters of all time, even if inactive; `--active-only` limits them to active clusters.
 
-With `--since PREV_RUN_DIR`, the output folder of the run behind the last report (made with the same `--registry`), the funnel shows the sequences added since, the largest clusters show their change (`+2`, or NEW), new sequences are ringed on the map, and the headline figures count new and grown clusters. Clusters are matched by persistent label. Without it, the page says what the registry recorded for the latest run (needs a run made with `--registry`).
+**Since the last report.** The funnel shows the sequences added, the largest clusters show their change (`+2`, or NEW), new sequences are circled on the map and timelines, and the headline figures count new and grown clusters; clusters are matched by persistent label. The comparison is with the last report saved to the registry: `hcv-report RUN_DIR --registry DIR --save-snapshot` (or any run that saves its labels with `--generate-report`) stores what the report showed in the registry's `last_report.json`, and the next report with `--registry` compares with it, so no old output folder has to be kept or remembered. `--since PREV_RUN_DIR` compares with a particular earlier run folder instead.
 
-The report reads the metadata the run itself used, through the `metadata.surviving_samples.csv` the run writes, so it needs no separate metadata argument and always matches the clustering. It shows counts only, with no sample identifiers. `--title`, `--logo FILE` and `--report-date` set the heading, logo and date on the page (default: today), and `--out` writes it elsewhere. Sections whose data are missing (no metadata, dates, locations or registry) are left out.
+The report reads the metadata the run itself used, through the `metadata.surviving_samples.csv` the run writes, so it needs no separate metadata argument and always matches the clustering. It shows counts only, with no sample identifiers. The heading and logo are the H2Seq ones, bundled with the package; `--title`, `--logo FILE` and `--no-logo` change them, `--report-date` sets the date on the page (default: today), `--out` writes it elsewhere and `--pdf` also writes a PDF (it needs Chrome or Chromium, found automatically or named in `HCV_CHROME`). Sections whose data are missing (no metadata, dates, locations or registry) are left out.
 
 ### GUI
 
@@ -401,7 +401,24 @@ Run-local IDs such as `1a_C0001` are renumbered whenever samples are added. For 
 pixi run hcv-cluster run -i samples.fasta -o results --registry label_registry --update-registry
 ```
 
-Network plots and the GUI name clusters by their persistent label (singletons and `UNASSIGNED` clusters keep their run-local ID). The GUI run tab has matching registry fields.
+Network plots and the GUI name clusters by their persistent label (singletons and `UNASSIGNED` clusters keep their run-local ID).
+
+#### Lab settings and registry safety
+
+A registry is only useful if every run uses the same one, so a lab can set it once. `pixi run hcv-init` (or `hcv-cluster init`) asks a few questions (Enter accepts the answer shown in brackets, which for the registry is `~/.hcv-cluster/label_registry`; typing `browse` at that question opens a folder picker and `none` means no registry; folders that do not exist are created) and writes `~/.hcv-cluster/config.toml` (or the file named in `HCV_CLUSTER_CONFIG`); it can also be written by hand:
+
+```toml
+registry = "/shared/hcv/cluster_registry"   # the one registry for real runs
+generate_report = true                      # the GUI's "Generate the one-page report" box starts ticked (and `hcv-cluster run` writes it unless --no-generate-report)
+threads = 12                                # MAFFT threads
+```
+
+With a registry in the settings, `hcv-cluster run` uses it and saves to it by default (`--no-update-registry` for an exploratory run, `--no-registry` to ignore it). The GUI reads the same file: its run tab shows the registry location, a tick box to save this run's labels (untick it for a test, so the registry is read but not changed) and one to run without a registry, and it cannot start a run until the location is right; "Save this as my default registry location" writes the settings file. The registry location is never guessed:
+
+- a missing or empty folder is an error unless the run says it is the first (`--new-registry`, or the tick box in the GUI), so a mistyped path or an unmounted drive cannot quietly start a second registry whose labels restart at 001;
+- a folder that holds other files, or whose registry files are missing or damaged, is refused, and registry files are never written among other files;
+- a run that contains fewer than half of the samples the registry already labels is refused when it would save (`--allow-registry-mismatch` overrides), because it is probably the wrong data or the wrong registry; an unsaved run only warns;
+- every save first copies the registry to `backups/<run id>/` inside it (the newest 20 are kept), so a bad run can be undone by copying the files back.
 
 Without `--update-registry` the registry is only read: known clusters show their saved label, and clusters that would be newly named show `UNASSIGNED`. Use that for exploratory runs; only commit runs you want reports to be based on.
 
@@ -414,7 +431,7 @@ Labels look like `HCV-2608-001`: the prefix (`--label-prefix`), the **year and m
 - Labels are only valid for the clustering that created them. The registry records the metric, region and threshold, and refuses a run that uses different ones — use a separate registry directory for a different definition.
 - Samples are tracked by FASTA ID (original ID for mixed-infection variants) and genotype. Samples missing from a later run keep their membership.
 
-Registry files (plain CSV, safe to diff or keep in git): `labels.csv`, `membership.csv`, `events.csv` (append-only history of every create/join/merge/split), `runs.csv`, `tracks.csv`. Registries contain sample IDs, so give them the same access controls as the input data. The registry tracks the primary distance metric (TN93 unless `--distance snp`). Other clustering methods can be tracked as separate *tracks* in the same registry, sharing one label numbering, through `hcv_cluster_labels.assign_labels`.
+Registry files (plain CSV, which diff well; but see below): `labels.csv`, `membership.csv`, `events.csv` (append-only history of every create/join/merge/split), `runs.csv`, `tracks.csv`. Registries contain sample IDs, so give them the same access controls as the input data, and keep them out of any shared or public git repository if the IDs identify people. The registry tracks the primary distance metric (TN93 unless `--distance snp`). Other clustering methods can be tracked as separate *tracks* in the same registry, sharing one label numbering, through `hcv_cluster_labels.assign_labels`.
 
 ### Sample audit
 

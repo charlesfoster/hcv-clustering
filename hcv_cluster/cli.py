@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import genotyping, labels, metadata, plotting, prep, provenance, stages, variants, workflow
+from . import genotyping, labels, metadata, plotting, prep, provenance, report, settings, stages, variants, workflow
 
 
 from .methods import (  # noqa: F401  (re-exported for existing callers)
@@ -94,6 +94,22 @@ def _label_definition(args: argparse.Namespace) -> dict[str, object]:
     )
 
 
+def _resolve_lab_defaults(args: argparse.Namespace) -> None:
+    """Fill what the command line left open from the user's settings file (see hcv_cluster.settings)."""
+    config = settings.load()
+    args.registry_from_settings = False
+    if args.no_registry:
+        args.registry, args.update_registry = None, False
+    elif args.registry is None and config.registry is not None:
+        args.registry, args.registry_from_settings = config.registry, True
+    if args.update_registry is None:  # a registry from the settings is updated; one named on the command line only when asked
+        args.update_registry = args.registry_from_settings
+    if args.threads is None:
+        args.threads = config.threads or 1
+    if args.generate_report is None:
+        args.generate_report = config.generate_report
+
+
 def _check_label_options(args: argparse.Namespace) -> None:
     """Fail before any pipeline work if the registry cannot be used for this run."""
     if args.update_registry and args.registry is None:
@@ -103,10 +119,19 @@ def _check_label_options(args: argparse.Namespace) -> None:
             args.label_date = datetime.date.fromisoformat(args.label_date).isoformat()
         except ValueError:
             raise ValueError(f"--label-date must be YYYY-MM-DD, got {args.label_date!r}") from None
-    if args.registry is not None and args.registry.is_dir():
-        labels.load_registry(args.registry).check_definition(
-            _label_track(args), _label_definition(args)
-        )
+    if args.registry is not None:
+        # A registry named in the settings must already exist (or be declared new): a typo or an unmounted
+        # drive should stop the run, not start a second registry. One named on the command line may be created.
+        strict = args.registry_from_settings
+        new = labels.check_location(args.registry, new_ok=args.new_registry or not strict, strict=strict,
+                                    need_write=bool(args.update_registry))
+        if not new:
+            labels.load_registry(args.registry).check_definition(_label_track(args), _label_definition(args))
+        what = "will be created" if new else labels.describe(args.registry)
+        print(f"Cluster label registry: {args.registry} ({what}); this run {'saves its labels' if args.update_registry else 'does not change it'}.")
+    else:
+        print(f"Note: no cluster label registry, so cluster names are run-local and will not persist between runs "
+              f"(--registry DIR, or set one in {settings.config_path()}).")
 
 
 def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: Path) -> None:
@@ -123,6 +148,7 @@ def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: 
         out_labels=outdir / "cluster_labels.csv",
         out_changes=outdir / "label_changes.csv",
         outdir_label=str(outdir),
+        allow_mismatch=args.allow_registry_mismatch,
     )
 
 
@@ -170,6 +196,7 @@ def command_run(args: argparse.Namespace) -> int:
         metadata.load_metadata_csv(args.metadata) if args.metadata is not None else []
     )
     plotting.validate_plot_fields(args, metadata_rows)
+    _resolve_lab_defaults(args)
     _check_label_options(args)
     stages.check_grouping_columns(metadata_rows, args.patient_column, args.sample_column)
 
@@ -514,8 +541,26 @@ def command_run(args: argparse.Namespace) -> int:
         {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items() if key != "func"},
         {"engine": "hcv-cluster run"},
     )
+    if args.generate_report:
+        _generate_report(args, outdir)
     print(f"Done. Results written to: {outdir}")
     return 0
+
+
+def _generate_report(args: argparse.Namespace, outdir: Path) -> None:
+    """Write report.html (and report.pdf where a Chrome is installed) for the run that has just finished."""
+    try:
+        written = report.build_report(
+            outdir, title=args.report_title or report.DEFAULT_TITLE, logo=args.report_logo, registry=args.registry,
+            save_snapshot=bool(args.registry and args.update_registry),
+        )
+        print(f"One-page report: {written}")
+        pdf = report.write_pdf(written, written.with_suffix(".pdf"))
+        print(f"Report PDF: {pdf}" if pdf else "No PDF was written (Chrome or Chromium not found; HCV_CHROME names one). "
+              "Open report.html in any browser and click 'Save as PDF'.")
+    except Exception as exc:  # the clustering is already saved: a report problem must not look like a failed run
+        print(f"Warning: the report could not be written ({exc}). The clustering results are complete; "
+              f"run hcv-report {outdir} to try again.")
 
 
 def command_refs(args: argparse.Namespace) -> int:
@@ -633,8 +678,8 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         "-T", "--threads",
         metavar="INT",
         type=int,
-        default=1,
-        help="MAFFT alignment threads (default: 1)",
+        default=None,
+        help="MAFFT alignment threads (default: from your settings, else 1)",
     )
     run_parser.add_argument(
         "-v", "--verbose",
@@ -665,12 +710,40 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--update-registry",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
-            "Save this run's labels to --registry: name new clusters, record merges and "
-            "splits. Leave off for exploratory runs (different thresholds, test data)."
+            "Save this run's labels to --registry (after backing it up): name new clusters, record merges and "
+            "splits. Off for exploratory runs (different thresholds, test data). Default: on when the registry "
+            "comes from your settings file, otherwise off."
         ),
     )
+    run_parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Ignore the registry in your settings: cluster names are then run-local and do not persist",
+    )
+    run_parser.add_argument(
+        "--new-registry",
+        action="store_true",
+        help="Create the registry in your settings, which does not exist yet (the first run only)",
+    )
+    run_parser.add_argument(
+        "--allow-registry-mismatch",
+        action="store_true",
+        help=adv("Save to the registry even if this input holds few of the samples it already labels"),
+    )
+    run_parser.add_argument(
+        "--generate-report",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "After clustering, write report.html and report.pdf: a one-page progress report that also shows what "
+            "changed since the last report saved to the registry. Default: from your settings, else off."
+        ),
+    )
+    run_parser.add_argument("--report-title", metavar="STR", default=None, help=adv("Report heading (default: the H2Seq title)"))
+    run_parser.add_argument("--report-logo", metavar="FILE", type=Path, default=None, help=adv("Report logo (default: the bundled H2Seq logo)"))
     run_parser.add_argument(
         "--label-prefix",
         metavar="STR",
@@ -939,6 +1012,10 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "init":  # hcv-cluster init: the same questions as hcv-init
+        from . import config_init
+
+        return config_init.main(argv[1:])
     show_advanced = "--help-advanced" in argv
 
     parser = build_parser(show_advanced=show_advanced)

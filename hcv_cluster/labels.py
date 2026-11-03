@@ -37,6 +37,7 @@ import fcntl
 import json
 import os
 import re
+import shutil
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -54,6 +55,13 @@ MEMBERSHIP_FILE = "membership.csv"
 EVENTS_FILE = "events.csv"
 RUNS_FILE = "runs.csv"
 LOCK_FILE = ".registry.lock"
+SNAPSHOT_FILE = "last_report.json"  # written by hcv-report: what the last report showed, so the next one can show growth
+BACKUP_DIR = "backups"
+MAX_BACKUPS = 20  # newest registry copies kept (one is made before every update)
+REGISTRY_FILES = (TRACKS_FILE, LABELS_FILE, MEMBERSHIP_FILE, EVENTS_FILE, RUNS_FILE)
+_OTHER_FILES = {LOCK_FILE, SNAPSHOT_FILE, BACKUP_DIR, ".DS_Store"}  # allowed beside the registry files
+MIN_KNOWN_MEMBERS = 10  # below this the registry is too small to tell a wrong input from a small one
+MIN_OVERLAP = 0.5  # a run should contain at least this share of the samples the registry already labels
 
 # (genotype, base sample id): stable across runs, unlike run-local sequence IDs
 # (a mixed-infection variant may be v1 in one run and v2 in the next).
@@ -333,6 +341,70 @@ def save_registry(registry: Registry, directory: Path) -> None:
     _write_csv_atomic(directory / RUNS_FILE, _RUN_FIELDS, registry.runs)
 
 
+def check_location(directory: Path, *, new_ok: bool = True, strict: bool = False, need_write: bool = False) -> bool:
+    """Refuse a directory that does not look like a usable registry; return True if it would be a new one.
+
+    A directory that holds other things is never accepted: writing registry files among them is
+    how a mistyped path pollutes a folder. In ``strict`` mode (the GUI, and a registry taken from the
+    settings) a missing or empty directory is also refused unless ``new_ok``, because the usual cause
+    is a typo or a drive that is not mounted, and the next run would quietly start a second registry
+    whose labels restart at 001.
+    """
+    if directory.exists() and not directory.is_dir():
+        raise RegistryError(f"{directory} is a file, not a directory.")
+    entries = {path.name for path in directory.iterdir()} - _OTHER_FILES if directory.exists() else set()
+    if not entries:
+        if strict and not new_ok:
+            raise RegistryError(
+                f"There is no registry at {directory}. Check the path and that the drive or folder is available. "
+                "If this is the very first run, say so (--new-registry, or tick the new-registry box in the GUI)."
+            )
+        if strict and not directory.parent.is_dir():
+            raise RegistryError(f"The folder {directory.parent} does not exist, so a registry cannot be created in it.")
+        return True
+    missing = [name for name in REGISTRY_FILES if name not in entries]
+    if missing:
+        shown = ", ".join(sorted(entries)[:6]) + (", …" if len(entries) > 6 else "")
+        raise RegistryError(
+            f"{directory} does not look like a cluster label registry: it holds {shown} but lacks "
+            f"{', '.join(missing)}. Point to the registry folder itself, or to a new empty folder."
+        )
+    for name, required in ((TRACKS_FILE, "track"), (LABELS_FILE, "label"), (MEMBERSHIP_FILE, "sample_id")):
+        try:
+            header = (directory / name).read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, IndexError, UnicodeDecodeError):
+            header = ""
+        if required not in header.split(","):
+            raise RegistryError(f"{directory / name} is empty or damaged: restore it from {directory / BACKUP_DIR}.")
+    if need_write and not os.access(directory, os.W_OK):
+        raise RegistryError(f"The registry {directory} is read-only, so this run cannot save its labels.")
+    return False
+
+
+def describe(directory: Path) -> str:
+    """One line on what a registry holds, for the GUI and the run log."""
+    registry = load_registry(directory)
+    active = sum(1 for record in registry.labels.values() if record.status == "active")
+    last = max((run["date"] for run in registry.runs if run.get("committed") == "true"), default="")
+    return f"{active} cluster label(s) from {len([r for r in registry.runs if r.get('committed') == 'true'])} saved run(s)" + (
+        f", last saved {last}" if last else ""
+    )
+
+
+def backup_registry(source: Path, target: Path, run_id: str) -> Path | None:
+    """Copy the registry's files to ``target/backups/<run_id>`` before they are changed; keep the newest few."""
+    present = [name for name in (*REGISTRY_FILES, SNAPSHOT_FILE) if (source / name).is_file()]
+    if not present:
+        return None
+    destination = target / BACKUP_DIR / run_id
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in present:
+        shutil.copy2(source / name, destination / name)
+    for old in sorted(path for path in (target / BACKUP_DIR).iterdir() if path.is_dir())[:-MAX_BACKUPS]:
+        shutil.rmtree(old, ignore_errors=True)
+    return destination
+
+
 @contextlib.contextmanager
 def locked(directory: Path) -> Iterator[None]:
     """Serialize registry updates (e.g. two scheduled runs on one server)."""
@@ -358,6 +430,7 @@ def label_run(
     prefix: str = DEFAULT_PREFIX,
     output_directory: Path | None = None,
     eligible: Collection[str] | None = None,
+    allow_mismatch: bool = False,
 ) -> tuple[LabelResult, list[dict[str, str | int]], Registry]:
     """Label a partition against the registry in ``directory``; save only if ``commit``.
 
@@ -366,10 +439,29 @@ def label_run(
 
     Without ``commit`` the registry on disk is untouched and clusters that would receive a
     brand-new label are reported as ``UNASSIGNED`` instead of a name that was never saved.
+
+    A run that contains few of the samples the registry already labels is probably the wrong
+    data or the wrong registry. Saving it is refused (``allow_mismatch`` overrides) because it
+    would rename or split real clusters; an unsaved run only warns.
     """
     target = output_directory or directory
     with locked(target) if commit else contextlib.nullcontext():
         registry = load_registry(directory)
+        known = {(g, s) for (t, g, s) in registry.membership if t == track}
+        if len(known) >= MIN_KNOWN_MEMBERS:
+            shared = len(known & set(partition))
+            if shared / len(known) < MIN_OVERLAP:
+                message = (
+                    f"only {shared} of the {len(known)} samples this registry already labels are in this input: "
+                    "is it the right data, and the right registry?"
+                )
+                if commit and not allow_mismatch:
+                    raise RegistryError(
+                        f"Not saving to the registry: {message} Pass --allow-registry-mismatch only if this is intended."
+                    )
+                print(f"Warning: {message}")
+        if commit:
+            backup_registry(directory, target, run_id)
         working = registry if commit else copy.deepcopy(registry)
         result = assign_labels(
             working, track, definition, partition,

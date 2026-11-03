@@ -8,8 +8,9 @@ metadata), clusters by location, collection months, a map of the largest cluster
 changed in the label registry. Sections whose data are missing (no metadata, no registry,
 no dates) are left out. It shows counts only: no sample identifiers.
 
-The page is one self-contained HTML file (inline SVG, no scripts or network access), so
-it renders and prints (A4, "Save as PDF") in any browser.
+The page is one self-contained HTML file (inline SVG, no network access; its only script is the
+button that opens the browser's print window), so it renders in any browser and its
+"Save as PDF" button needs nothing but that browser.
 """
 
 from __future__ import annotations
@@ -22,15 +23,20 @@ import datetime
 import html
 import json
 import mimetypes
+import os
+import shutil
 import statistics
+import subprocess
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Collection, Mapping, Sequence
 
-from . import __version__, methods
+from . import __version__, labels, methods, settings
 
 REPORT_FILENAME = "report.html"
-DEFAULT_TITLE = "HCV sequencing & transmission-cluster update"
+DEFAULT_TITLE = "H2Seq HCV sequencing & transmission-cluster update"
+DEFAULT_LOGO: Path | None = Path(__file__).with_name("data") / "h2seq_logo.png"  # replaced by --logo, removed by --no-logo
 DATE_FORMATS = ("%d/%m/%Y", "%Y-%m-%d", "%d-%b-%y", "%d-%b-%Y", "%d-%B-%Y", "%d %b %Y", "%d %B %Y")  # d/m/yyyy, yyyy-mm-dd, 5-Mar-24
 MAX_LOCATIONS = 20  # locations named in the location table (all of them, unless there are more than fit); the rest are combined
 MAP_CLUSTERS = 5  # clusters drawn on the map, keyed a, b, c… in the largest-clusters table
@@ -101,7 +107,11 @@ svg { width: 100%; height: auto; display: block }
 .note { font-size: 9.5px; color: @MUTE@; margin: 2px 0 0 }
 .callout { border-left: 3px solid @RED@; background: #fdf3f3; padding: 6px 9px; border-radius: 0 5px 5px 0; font-size: 10px }
 footer { margin-top: auto; border-top: 1px solid @LINE@; padding-top: 6px; color: @MUTE@; font-size: 9px; line-height: 1.45 }
-@media print { body { background: #fff } .page { margin: 0 } }
+* { -webkit-print-color-adjust: exact; print-color-adjust: exact }  /* keep the shaded bars when a browser prints it */
+.toolbar { width: 210mm; margin: 10px auto 8px; display: flex; align-items: center; gap: 12px; color: @MUTE@; font-size: 11px }
+.toolbar button { background: @BLUE@; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer }
+.toolbar button:hover { background: #163f82 }
+@media print { body { background: #fff } .page { margin: 0 } .toolbar { display: none } }
 """
 
 
@@ -366,29 +376,86 @@ def _breakdown(title: str, keyed: Sequence[tuple[str, bool]], min_cell: int, ord
             f"{body}</table>")
 
 
-def _compare(since: Path, rows: Sequence[Mapping[str, str]], members: Mapping[str, list[dict[str, str]]],
-             name_of: Mapping[str, str]) -> dict:
-    """What changed since the earlier run in ``since``, matching clusters by their persistent label."""
-    earlier = _read(since / "metadata.surviving_samples.csv") or _read(since / "clusters.csv")
+def _state_of(rows: Sequence[Mapping[str, str]], received: int | None, date: datetime.date | None) -> dict:
+    """What a report showed, in a form that lets the next one say what changed."""
+    named = Counter(r["cluster_label"] for r in rows if int(r["cluster_size"]) > 1 and r.get("cluster_label") not in (None, "", "UNASSIGNED"))
+    return {"date": date.isoformat() if date else "", "received": received, "passed": len(rows),
+            "clustered": sum(int(r["cluster_size"]) > 1 for r in rows), "sizes": dict(named),
+            "ids": sorted(r["sample_id"] for r in rows)}
+
+
+def _run_state(run_dir: Path) -> dict:
+    earlier = _read(run_dir / "metadata.surviving_samples.csv") or _read(run_dir / "clusters.csv")
     if not earlier:
-        raise FileNotFoundError(f"{since} has no metadata.surviving_samples.csv: is it a finished run?")
-    if not any(r.get("cluster_label") not in (None, "", "UNASSIGNED") for r in rows):
-        raise ValueError("--since needs persistent cluster labels: run both analyses with the same --registry (and --update-registry)")
-    was = Counter(r["cluster_label"] for r in earlier if int(r["cluster_size"]) > 1 and r.get("cluster_label") not in (None, "", "UNASSIGNED"))
-    now = {c: len(m) for c, m in members.items()}
-    change = {c: now[c] - was.get(name_of[c], 0) for c in members}
-    info_file = since / "run_info.json"
+        raise FileNotFoundError(f"{run_dir} has no metadata.surviving_samples.csv: is it a finished run?")
+    info_file = run_dir / "run_info.json"
     created = json.loads(info_file.read_text()).get("created", "") if info_file.exists() else ""
+    return _state_of(earlier, len(_read(run_dir / "sample_audit.csv")) or None,
+                     datetime.date.fromisoformat(created[:10]) if created else None)
+
+
+def read_snapshot(registry: Path) -> dict | None:
+    """What the last report that was saved to this registry showed, if there was one."""
+    path = registry / labels.SNAPSHOT_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def write_snapshot(registry: Path, state: dict) -> None:
+    registry.mkdir(parents=True, exist_ok=True)
+    tmp = registry / (labels.SNAPSHOT_FILE + ".tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, registry / labels.SNAPSHOT_FILE)
+
+
+def _compare_state(previous: Mapping[str, object], rows: Sequence[Mapping[str, str]],
+                   members: Mapping[str, list[dict[str, str]]], name_of: Mapping[str, str]) -> dict:
+    """What changed since ``previous``, matching clusters by their persistent label."""
+    if not any(r.get("cluster_label") not in (None, "", "UNASSIGNED") for r in rows):
+        raise ValueError("a comparison with an earlier report needs persistent cluster labels: use a registry (--registry)")
+    was = previous["sizes"]
+    change = {c: len(m) - was.get(name_of[c], 0) for c, m in members.items()}
     return {
-        "date": datetime.date.fromisoformat(created[:10]) if created else None,
-        "received": len(_read(since / "sample_audit.csv")) or None,
-        "passed": len(earlier),
-        "clustered": sum(int(r["cluster_size"]) > 1 for r in earlier),
-        "new_ids": {r["sample_id"] for r in rows} - {r["sample_id"] for r in earlier},
+        "date": datetime.date.fromisoformat(previous["date"]) if previous.get("date") else None,
+        "received": previous.get("received"),
+        "passed": previous["passed"],
+        "clustered": previous["clustered"],
+        "new_ids": {r["sample_id"] for r in rows} - set(previous["ids"]),
         "new": {c for c in members if name_of[c] not in was},
         "grown": {c for c, d in change.items() if d > 0 and name_of[c] in was},
         "change": change,
     }
+
+
+def find_chrome() -> str | None:
+    """A Chrome or Chromium to print the page to PDF (``HCV_CHROME`` names one explicitly)."""
+    candidates = [os.environ.get("HCV_CHROME") or "", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                  "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return next((found for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
+                 if (found := shutil.which(name))), None)
+
+
+def _launch(command: list[str]) -> None:
+    subprocess.run(command, capture_output=True, timeout=120, check=False)
+
+
+def write_pdf(html: Path, pdf: Path) -> Path | None:
+    """Print the report page to a one-page A4 PDF; None if there is no Chrome or it failed."""
+    chrome = find_chrome()
+    if chrome is None:
+        return None
+    with tempfile.TemporaryDirectory() as profile:
+        command = [chrome, "--headless=new", "--disable-gpu", "--no-pdf-header-footer", f"--user-data-dir={profile}",
+                   f"--print-to-pdf={pdf}", html.resolve().as_uri()]
+        if hasattr(os, "geteuid") and os.geteuid() == 0:  # a container runs as root, where Chrome needs this
+            command.insert(1, "--no-sandbox")
+        try:
+            _launch(command)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+    return pdf if pdf.is_file() and pdf.stat().st_size > 0 else None
 
 
 def build_report(
@@ -397,6 +464,7 @@ def build_report(
     *,
     title: str = DEFAULT_TITLE,
     logo: Path | None = None,
+    no_logo: bool = False,
     location_column: str | None = None,
     date_column: str | None = None,
     age_column: str | None = None,
@@ -406,6 +474,8 @@ def build_report(
     indigenous_column: str | None = None,
     min_cell: int = 5,
     since: Path | None = None,
+    registry: Path | None = None,
+    save_snapshot: bool = False,
     chart_from: datetime.date | None = None,
     chart_months: int | None = None,
     active_months: int = 6,
@@ -419,6 +489,9 @@ def build_report(
     columns are recognised by name (see ``COLUMN_NAMES``) unless named; a column the run's
     table lacks leaves its section out. ``since`` is the output folder of an earlier run
     (made with the same label registry): clusters are then flagged new or grown since it.
+    Without ``since``, the report is compared with the last one saved to ``registry`` (see
+    ``save_snapshot``), so "since the last report" needs no folder to be remembered. ``logo``
+    defaults to the bundled H2Seq logo; ``no_logo`` leaves it out.
     The two time charts start at ``chart_from``, or ``chart_months`` back from the latest sample;
     by default they show the whole study up to 36 months. A cluster is active if it has a sample
     in the last ``active_months`` months of the data; ``active_only`` limits the map, timelines and
@@ -457,7 +530,18 @@ def build_report(
     in_spanning = sum(len(members[c]) for c in spanning)
     sizes = sorted((len(m) for m in members.values()), reverse=True)
     name_of = {c: (m[0].get("cluster_label") or c) if m[0].get("cluster_label") != "UNASSIGNED" else c for c, m in members.items()}
-    growth = _compare(since, rows, members, name_of) if since is not None else None
+    previous = _run_state(since) if since is not None else (read_snapshot(registry) if registry is not None else None)
+    growth = None
+    if previous is not None:
+        try:
+            growth = _compare_state(previous, rows, members, name_of)
+        except ValueError:
+            if since is not None:  # asked for explicitly: say why it cannot be done
+                raise
+    if no_logo:
+        logo = None
+    elif logo is None and DEFAULT_LOGO is not None and DEFAULT_LOGO.is_file():
+        logo = DEFAULT_LOGO
 
     # the two rows of headline numbers
     collected = received  # placeholder: the number of samples collected is not in the run's files yet
@@ -646,7 +730,9 @@ def build_report(
                  "new, grown, merged and split clusters.")
 
     page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>{_e(title)}</title><style>{_css()}</style></head><body><div class="page">
+<html lang="en"><head><meta charset="utf-8"><title>{_e(title)}</title><style>{_css()}</style></head><body>
+<div class="toolbar"><button onclick="window.print()">Save as PDF</button><span>Opens your browser's print window: choose “Save as PDF” as the destination.</span></div>
+<div class="page">
 <header>{_logo_html(logo)}<div><h1>{_e(title)}</h1><p>Hepatitis C virus genomic surveillance</p>{f'<p class="range">{range_text}</p>' if range_text else ''}</div>
 <div class="meta"><b>{_long_date(report_date)}</b>Data to {_long_date(cutoff)}</div></header>
 <section><div class="band">Sequence information</div><div class="funnel">{funnel_html}</div>{sequence_block}</section>
@@ -657,6 +743,8 @@ def build_report(
 </div></body></html>"""
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
+    if save_snapshot and registry is not None and any(r.get("cluster_label") not in (None, "", "UNASSIGNED") for r in rows):
+        write_snapshot(registry, _state_of(rows, received, report_date))  # the next report compares with this one
     return out
 
 
@@ -664,12 +752,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="hcv-report",
         description="Write a one-page A4 progress report (HTML) from a finished run's output folder. "
-                    "Open it in a browser and print to PDF.",
+                    "Open it in a browser and click 'Save as PDF', or add --pdf.",
     )
     p.add_argument("run_dir", type=Path, help="Output folder of a finished run")
     p.add_argument("--out", type=Path, default=None, help=f"Where to write the report (default: RUN_DIR/{REPORT_FILENAME})")
     p.add_argument("--title", default=DEFAULT_TITLE)
-    p.add_argument("--logo", type=Path, default=None, help="PNG, JPG or SVG for the top of the page")
+    p.add_argument("--logo", type=Path, default=None, help="PNG, JPG or SVG for the top of the page (default: the bundled H2Seq logo)")
+    p.add_argument("--no-logo", action="store_true", help="Leave the logo out")
+    p.add_argument("--pdf", action="store_true", help="Also write a PDF next to the HTML (needs Chrome or Chromium; HCV_CHROME names one)")
+    p.add_argument("--registry", type=Path, default=None, metavar="DIR",
+                   help="Cluster label registry: the report is compared with the last one saved to it (default: the registry in your settings)")
+    p.add_argument("--save-snapshot", action="store_true",
+                   help="Remember this report in the registry, so the next one shows what changed since it")
     p.add_argument("--location-column", default=None, help="Default: a column named location, site or setting")
     p.add_argument("--date-column", default=None, help="Collection date column (default: sample_collection_date, collection_date or DOC)")
     p.add_argument("--age-column", default=None, help="Default: a column named age")
@@ -695,8 +789,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.logo is not None and not a.logo.is_file():
         p.error(f"--logo: no such file: {a.logo}")
     try:
+        registry = a.registry or settings.load().registry
+        if registry is not None and (a.registry is not None or registry.is_dir()):
+            labels.check_location(registry, new_ok=False, strict=True)  # a mistyped or wrong folder is an error, not a silent skip
+        if registry is None and a.save_snapshot:
+            p.error("--save-snapshot needs a registry (--registry DIR, or one in your settings)")
         written = build_report(
-            a.run_dir, a.out, title=a.title, logo=a.logo, location_column=a.location_column, date_column=a.date_column,
+            a.run_dir, a.out, title=a.title, logo=a.logo, no_logo=a.no_logo, registry=registry, save_snapshot=a.save_snapshot, location_column=a.location_column, date_column=a.date_column,
             age_column=a.age_column, sex_column=a.sex_column, diagnosis_column=a.diagnosis_column,
             injecting_column=a.injecting_column, indigenous_column=a.indigenous_column, min_cell=a.min_cell, since=a.since,
             chart_from=a.chart_from, chart_months=a.chart_months, active_months=a.active_months, active_only=a.active_only,
@@ -705,6 +804,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, FileNotFoundError) as exc:
         p.error(str(exc))
     print(f"Report written to {written}")
+    if a.pdf:
+        pdf = write_pdf(written, written.with_suffix(".pdf"))
+        print(f"PDF written to {pdf}" if pdf else "No PDF: Chrome or Chromium was not found (set HCV_CHROME), or it failed. "
+              "Open the HTML in a browser and click 'Save as PDF'.")
     return 0
 
 

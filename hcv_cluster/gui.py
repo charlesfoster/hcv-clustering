@@ -18,7 +18,7 @@ from typing import Any
 
 import streamlit as st
 
-from . import cli, genotyping, metadata, prep, viz
+from . import cli, genotyping, labels, metadata, prep, settings, viz
 
 
 REGION_PRESETS_UI = (
@@ -30,6 +30,72 @@ REGION_PRESETS_UI = (
     ("cds", "Whole coding sequence"),
     ("ns5b", "NS5B only"),
 )
+
+
+def _user_settings() -> settings.Settings:
+    try:
+        return settings.load()
+    except ValueError as exc:
+        st.error(str(exc))
+        return settings.Settings()
+
+
+def _registry_panel() -> dict[str, Any]:
+    """Where the cluster label registry is, and whether this run saves its labels to it."""
+    config = _user_settings()
+    st.markdown("**Cluster label registry**")
+    st.caption(
+        "Remembers each cluster's name (e.g. HCV-2611-001) between runs, so a report can show what changed since the last one."
+    )
+    choice: dict[str, Any] = {"path": None, "update": False, "allow_mismatch": False, "error": None}
+    if st.checkbox("Do not use a registry for this run", help="Cluster names (like 1a_C0001) then change every run and cannot be compared between reports."):
+        return choice
+    saved = str(config.registry) if config.registry else ""
+    raw = st.text_input("Registry location", value=saved, help="The folder that holds the registry (CSV files), the same every time.").strip()
+    new_ok = st.checkbox(
+        "This is the first run: create a new registry here",
+        help="Tick only for the very first run. If the folder should already exist, leave this off so a mistyped path is caught.",
+    )
+    save = st.checkbox(
+        "Save this run's labels to the registry",
+        value=True,
+        help="Leave ticked for a real run. Untick for a test (a subset, other settings): the registry is then read but not changed.",
+    )
+    if not raw:
+        choice["error"] = "Enter the registry location, or tick 'Do not use a registry for this run'."
+        st.error(choice["error"])
+        return choice
+    path = Path(raw).expanduser()
+    try:
+        is_new = labels.check_location(path, new_ok=new_ok, strict=True, need_write=save)
+    except labels.RegistryError as exc:
+        choice["error"] = str(exc)
+        st.error(choice["error"])
+        return choice
+    st.success(f"A new registry will be created at {path}." if is_new else f"Registry found: {labels.describe(path)}.")
+    if raw != saved and st.button("Save this as my default registry location"):
+        st.success(f"Saved to {settings.save(registry=path)}.")
+    with st.expander("Registry safety"):
+        choice["allow_mismatch"] = st.checkbox(
+            "Save even if this input holds few of the samples the registry already labels",
+            help="Normally a run that contains less than half of the registry's samples is refused: it is probably the wrong data or the wrong registry.",
+        )
+    choice.update(path=str(path), update=save)
+    return choice
+
+
+def _report_downloads(outdir: Path) -> None:
+    pdf, html = outdir / "report.pdf", outdir / "report.html"
+    if not (pdf.is_file() or html.is_file()):
+        return
+    st.subheader("Report")
+    columns = st.columns(2)
+    if pdf.is_file():
+        columns[0].download_button("Download the report (PDF)", pdf.read_bytes(), file_name="h2seq_report.pdf", mime="application/pdf")
+    elif html.is_file():
+        st.caption("No PDF was made (Chrome or Chromium was not found). Download the HTML, open it in any browser and click 'Save as PDF' at the top.")
+    if html.is_file():
+        columns[1].download_button("Download the report (HTML)", html.read_bytes(), file_name="h2seq_report.html", mime="text/html")
 
 
 def _region_picker() -> tuple[str, str | None]:
@@ -266,25 +332,13 @@ def _run_tab() -> None:
             )
     outdir = Path(st.text_input("Output directory", value="results_gui"))
 
-    label_col1, label_col2 = st.columns(2)
-    with label_col1:
-        registry_raw = st.text_input(
-            "Cluster label registry (optional)",
-            value="",
-            help=(
-                "Directory holding persistent cluster labels (e.g. HCV-2608-001) that are "
-                "reused between runs. Leave blank to use run-local cluster IDs only."
-            ),
-        )
-    with label_col2:
-        update_registry = st.checkbox(
-            "Save labels to the registry",
-            disabled=not registry_raw.strip(),
-            help=(
-                "Name new clusters and record merges/splits. Leave off for exploratory "
-                "runs: new clusters then show as UNASSIGNED and the registry is not changed."
-            ),
-        )
+    registry_choice = _registry_panel()
+    config = _user_settings()
+    write_report = st.checkbox(
+        "Generate the one-page report after clustering",
+        value=config.generate_report,
+        help="Writes a one-page A4 report (PDF and HTML) for download. When the run saves its labels to the registry, it also shows what changed since the last report.",
+    )
 
     region, region_error = _region_picker()
 
@@ -316,7 +370,7 @@ def _run_tab() -> None:
                 qualifier = "provisional operational cutoff" if explicit else "generic fallback"
                 st.caption(f"This is a **{qualifier}**, not a cutoff validated for this exact region.")
     with col3:
-        threads = st.number_input("MAFFT threads", min_value=1, value=1, step=1)
+        threads = st.number_input("MAFFT threads", min_value=1, value=_user_settings().threads or 1, step=1)
 
     snp_count_threshold = None
     if distance in ("snp", "both"):
@@ -492,7 +546,7 @@ def _run_tab() -> None:
     run_clicked = st.button(
         "Run pipeline",
         type="primary",
-        disabled=uploaded is None or region_error is not None or metadata_error is not None,
+        disabled=uploaded is None or region_error is not None or metadata_error is not None or registry_choice["error"] is not None,
     )
 
     if run_clicked:
@@ -534,10 +588,14 @@ def _run_tab() -> None:
             ]
             if threshold is not None:
                 argv.extend(["--threshold", str(threshold)])
-            if registry_raw.strip():
-                argv.extend(["--registry", registry_raw.strip()])
-                if update_registry:
-                    argv.append("--update-registry")
+            if registry_choice["path"]:
+                argv.extend(["--registry", registry_choice["path"],
+                             "--update-registry" if registry_choice["update"] else "--no-update-registry"])
+                if registry_choice["allow_mismatch"]:
+                    argv.append("--allow-registry-mismatch")
+            else:
+                argv.append("--no-registry")  # the user chose none: ignore any registry in the settings file
+            argv.append("--generate-report" if write_report else "--no-generate-report")
             if verbose:
                 argv.append("--verbose")
             if dry_run:
@@ -588,6 +646,7 @@ def _run_tab() -> None:
 
 
 def _render_results(outdir: Path, distance: str) -> None:
+    _report_downloads(outdir)
     st.subheader("Results")
     st.caption("clusters.csv + links.csv together are a MicrobeTrace-ready node/edge pair spanning all genotypes.")
     _show_cluster_table("Merged clusters (primary metric)", outdir / "clusters.csv")

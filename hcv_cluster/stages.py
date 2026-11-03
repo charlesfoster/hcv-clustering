@@ -355,6 +355,7 @@ def label_clusters(
     out_changes: Path,
     registry_out: Path | None = None,
     outdir_label: str = "",
+    allow_mismatch: bool = False,
 ) -> labels.LabelResult:
     """Add the persistent ``cluster_label`` column and write label reports."""
     rows = read_csv_rows(clusters_csv)
@@ -377,6 +378,7 @@ def label_clusters(
         prefix=prefix,
         output_directory=registry_out,
         eligible=eligible,
+        allow_mismatch=allow_mismatch,
     )
     if "cluster_label" not in fieldnames:
         fieldnames.insert(fieldnames.index("cluster_id") + 1, "cluster_label")

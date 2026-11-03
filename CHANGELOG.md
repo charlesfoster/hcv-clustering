@@ -9,14 +9,26 @@ change which sequences cluster together for the same input is called out as **re
 First versioned release, and the first that can run as a Nextflow pipeline.
 
 ### Added
-- **One-page progress report** (`hcv-report RUN_DIR`): a standalone command, run only when a report is wanted and
-  not a step of the pipeline. Writes `report.html`, an A4 summary of a finished run: the sequence funnel, cluster
+- **One-page progress report** (`hcv-report RUN_DIR`): a standalone command, run when a report is wanted (or at the
+  end of a run with `--generate-report`; off unless asked for). Writes `report.html`, an A4 summary of a finished run: the sequence funnel, cluster
   statistics, age, sex, Indigenous status, injecting and diagnosis breakdowns from the metadata, collection months,
   a by-location table, a map of the five largest clusters and registry changes since the last report.
   `--since PREV_RUN_DIR` flags new and grown clusters and new sequences relative to the run behind the last report.
   The time charts show the last 36 months by default (`--chart-months`, `--chart-from`); the largest-clusters
   table shows each cluster's first and last sample and whether it is active, and `--active-only` limits the map,
   timelines and table to active clusters. Counts only: no sample identifiers.
+- **Report on demand after a run** (`--generate-report`, a tick box in the GUI): writes `report.html` and, where Chrome
+  or Chromium is installed, `report.pdf`, with download buttons in the GUI; the HTML has its own Save as PDF button,
+  so any browser can make the PDF. A report that fails never fails the run.
+  The H2Seq logo and title are the defaults. A run that saves its labels also saves what the report showed in the registry
+  (`last_report.json`), so the next report shows growth since it with no `--since` and no old folder to remember.
+- **Lab settings** (`~/.hcv-cluster/config.toml`): `registry`, `generate_report` and `threads` apply to the
+  command line and the GUI. `hcv-init` writes the file by asking questions. The GUI shows the registry location, a tick box to save the run's
+  labels and one to run without a registry, and blocks a run until the registry location is right.
+- **Registry safety:** a registry named in the settings must already exist (or be declared new with `--new-registry`);
+  a folder that is not a registry, or whose files are damaged, is refused; saving is refused when the input holds fewer
+  than half of the samples the registry labels (`--allow-registry-mismatch`); every save is preceded by a backup
+  in `backups/<run id>/`. `--update-registry` can now be turned off with `--no-update-registry`.
 - **Nextflow workflow** (`main.nf`, `workflows/`, `modules/`) with a reusable `HCV_CLUSTER` subworkflow, a
   Docker image built from `pixi.lock`, `-resume`, alignment reuse (`--reuse_alignments`) and network plots.
   Its tables are identical to `hcv-cluster run` (guarded by `tests/test_nextflow_parity.py`).

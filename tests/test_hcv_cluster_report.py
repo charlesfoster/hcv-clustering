@@ -11,6 +11,11 @@ import pytest
 from hcv_cluster import report
 
 
+@pytest.fixture(autouse=True)
+def _no_logo_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(report, "DEFAULT_LOGO", None)  # keeps the test pages small; the logo has its own test
+
+
 def _write(path: Path, fieldnames: list[str], rows: list[dict]) -> Path:
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -75,6 +80,7 @@ def test_report_summarises_a_run_and_shows_no_identifiers(tmp_path: Path) -> Non
     assert "<td class='key'>a</td><td>HCV-0001</td>" in page and "<td class='key'>b</td><td>HCV-0002</td>" in page  # the map's keys
     assert "<b>–</b><span>new clusters since last report" in page and "first run in this registry" in page  # a first run has nothing to compare with
     assert "SMP-" not in page  # counts only, never a sample identifier
+    assert 'onclick="window.print()"' in page and "print-color-adjust: exact" in page and "<script" not in page  # a Save as PDF button, no other script
 
 
 def test_report_leaves_out_what_the_run_has_no_data_for(tmp_path: Path) -> None:
@@ -134,6 +140,41 @@ def test_report_windows_the_charts_and_flags_active_clusters(tmp_path: Path) -> 
     assert "<td class='key'>a</td><td>HCV-0002</td>" in only and "HCV-0001" not in only and "active clusters only" in only
     with pytest.raises(ValueError, match="needs collection dates"):
         report.build_report(_run_dir(tmp_path, metadata=False, name="nodates"), active_only=True)
+
+
+def test_report_remembers_itself_in_the_registry_and_shows_growth_next_time(tmp_path: Path) -> None:
+    registry = tmp_path / "reg"
+    earlier = _run_dir(tmp_path, name="earlier", without=("SMP-A3", "SMP-B1", "SMP-B2"))
+    now = _run_dir(tmp_path)
+    assert "<em>" not in report.build_report(earlier, registry=registry).read_text()  # nothing to compare with yet
+    assert not (registry / "last_report.json").exists()  # and not saved unless asked
+    report.build_report(earlier, registry=registry, save_snapshot=True, report_date=datetime.date(2026, 7, 14))
+    page = report.build_report(now, registry=registry).read_text()  # no --since: the saved report is the comparison
+    assert "<b>8 <em>+3</em></b><span>passed QC" in page and "Since the report of 14 July 2026" in page
+    table = now / "metadata.surviving_samples.csv"  # a run without persistent labels must not replace the saved report
+    rows = list(csv.DictReader(table.open()))
+    _write(table, list(rows[0]), [{**r, "cluster_label": ""} for r in rows])
+    report.build_report(now, registry=registry, save_snapshot=True, report_date=datetime.date(2026, 11, 3))
+    assert report.read_snapshot(registry)["date"] == "2026-07-14"
+
+
+def test_report_has_the_h2seq_logo_and_title_unless_told_otherwise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"\x89PNG fake")
+    monkeypatch.setattr(report, "DEFAULT_LOGO", logo)
+    run = _run_dir(tmp_path)
+    page = report.build_report(run).read_text()
+    assert "<img" in page and "H2Seq HCV sequencing" in page
+    assert "<img" not in report.build_report(run, no_logo=True).read_text()
+
+
+def test_pdf_needs_a_chrome_and_says_so_when_there_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = tmp_path / "chrome"
+    fake.write_text("")
+    monkeypatch.setenv("HCV_CHROME", str(fake))
+    assert report.find_chrome() == str(fake)
+    monkeypatch.setattr(report, "find_chrome", lambda: None)
+    assert report.write_pdf(tmp_path / "r.html", tmp_path / "r.pdf") is None
 
 
 def test_report_is_a_standalone_command(tmp_path: Path) -> None:

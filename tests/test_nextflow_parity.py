@@ -26,7 +26,7 @@ COMPARED = [
     "sample_audit.csv", "clusters.csv", "clusters.snp.csv", "links.csv", "links.snp.csv",
     "metadata.all_samples.csv", "metadata.surviving_samples.csv", "sequence_variants.csv",
     "cluster_labels.csv", "genotypes.csv", "iap_pairs.csv",
-    "links.iap_information.csv", "links.iap.csv", "clusters.iap.csv", "clusters.comparison.csv",
+    "links.iap_information.csv", "links.iap.csv", "clusters.iap.csv", "clusters.comparison.csv", "iap_sensitivity.csv",
     "cluster_labels.iap.csv",
     "by_genotype/1a/iap_pairs.csv", "by_genotype/1a/iap_clusters.csv", "by_genotype/1a/iap_links.csv", "by_genotype/1a/clusters.csv", "by_genotype/1a/snp_clusters.csv", "by_genotype/1a/tn93.csv",
     "by_genotype/1a/prep.qc.csv", "by_genotype/1a/variant_decisions.csv",
@@ -57,14 +57,14 @@ def test_cli_and_workflow_agree(tmp_path: Path) -> None:
     subprocess.run(
         [sys.executable, "-m", "hcv_cluster", "run", "-i", str(FIXTURE), "-o", str(cli_out),
          "--registry", str(tmp_path / "reg_cli"), "--update-registry",
-         "--metadata", str(metadata), "--patient-column", "patient_index", "--sample-column", "sample_index", "--iap-model", "--iap-alpha", "0.2", *shared],
+         "--metadata", str(metadata), "--patient-column", "patient_index", "--sample-column", "sample_index", "--iap-model", "--iap-min-index", "0.2", *shared],
         check=True, capture_output=True, cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(ROOT)},
     )
     subprocess.run(
         ["nextflow", "run", str(ROOT / "main.nf"), "--input", str(FIXTURE), "--outdir", str(nf_out),
          "--registry", str(tmp_path / "reg_nf"), "--update_registry", "true",
          "--metadata", str(metadata), "--patient_column", "patient_index", "--sample_column", "sample_index",
-         "--iap_model", "true", "--iap_alpha", "0.2", "--distance", "both", "--label_date", "2026-10-23"],
+         "--iap_model", "true", "--iap_min_index", "0.2", "--distance", "both", "--label_date", "2026-10-23"],
         check=True, capture_output=True, cwd=tmp_path, env={**os.environ, "NXF_WORK": str(tmp_path / "work")},
     )
     for name in COMPARED:

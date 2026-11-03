@@ -282,7 +282,7 @@ process IAP_MERGE {
     """
 }
 
-// IAP-only clusters (links from the relatedness index alone, --iap_alpha), labelled as their own
+// IAP-only clusters (links from the relatedness index alone, --iap_min_index), labelled as their own
 // registry track, and their comparison with the main clusters. The registry it reads is the one the
 // main LABEL step has just updated, so the two steps never overwrite each other's tracks.
 process IAP_SUPPORT {
@@ -310,6 +310,7 @@ process IAP_SUPPORT {
     path "links.iap.csv",                 emit: links
     path "clusters.iap.csv",              emit: clusters
     path "clusters.comparison.csv",       emit: comparison
+    path "iap_sensitivity.csv"
     path "cluster_labels.iap.csv",        optional: true
     path "label_changes.iap.csv",         optional: true
     path "iap_tables/*.csv",              emit: genotype_tables
@@ -321,7 +322,7 @@ process IAP_SUPPORT {
         : ""
     """
     ${stage('iap-support')} --clusters ${clusters} --links ${links} --pairs ${pairs} \\
-        --alpha ${params.iap_alpha} --variants ${variants} ${patientArgs(metadata)} \\
+        --min-index ${params.iap_min_index} --variants ${variants} ${patientArgs(metadata)} \\
         ${registryArgs} --tables-dir iap_tables --outdir .
     """
 }

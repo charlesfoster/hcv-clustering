@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hcv_cluster import cli, iap, stages
+from hcv_cluster import cli, iap, iap_support, stages
 
 
 def test_time_difference_and_rate_follow_the_documented_example() -> None:
@@ -164,7 +164,7 @@ def test_iap_clusters_are_built_from_the_index_alone_and_compared_with_the_main_
         # f and g have no collection date, so they are not in this table
     )
     assert stages.main(["iap-support", "--clusters", str(tmp_path / "clusters.csv"), "--links", str(tmp_path / "links.csv"),
-                        "--pairs", str(tmp_path / "iap_pairs.csv"), "--alpha", "0.05", "--outdir", str(tmp_path),
+                        "--pairs", str(tmp_path / "iap_pairs.csv"), "--min-index", "0.05", "--outdir", str(tmp_path),
                         "--tables-dir", str(tmp_path / "tables")]) == 0
 
     links = {(r["source"], r["target"]): r for r in csv.DictReader((tmp_path / "links.iap_information.csv").open())}
@@ -202,7 +202,7 @@ def test_iap_clusters_are_built_from_the_index_alone_and_compared_with_the_main_
     assert len(list(csv.DictReader((tmp_path / "tables" / "1a.iap.links.csv").open()))) == 3
 
     assert stages.main(["iap-support", "--clusters", str(tmp_path / "clusters.csv"), "--links", str(tmp_path / "links.csv"),
-                        "--pairs", str(tmp_path / "iap_pairs.csv"), "--alpha", "1.5", "--outdir", str(tmp_path)]) == 1
+                        "--pairs", str(tmp_path / "iap_pairs.csv"), "--min-index", "1.5", "--outdir", str(tmp_path)]) == 1
 
 
 def test_iap_labels_have_their_own_prefix_and_numbering_in_the_same_registry(tmp_path: Path) -> None:
@@ -261,3 +261,25 @@ def test_pairs_are_flagged_when_their_count_may_mislead(tmp_path: Path) -> None:
     assert (summary.low_coverage_pairs, summary.noisy_pairs) == (3, 3) and "flagged: 3 low_coverage, 3 noisy" in iap.describe(summary, out)
     rows = {(r["seqid_1"], r["seqid_2"]): r for r in csv.DictReader(out.open())}
     assert rows["full", "same"]["raw_dist"] == "0" and rows["full", "noisy"]["raw_dist"] != "0"  # whole numbers stay whole; noisy ones are fractional
+
+
+def test_cutoff_sensitivity_is_a_fixed_descriptive_table(tmp_path: Path) -> None:
+    pairs = tmp_path / "pairs.csv"  # a-b is the closest, then b-c, c-d and a-d; c-d involves a flagged pair
+    rows = [("a", "b", 2, 0.9, ""), ("b", "c", 20, 0.3, ""), ("c", "d", 40, 0.06, "low_coverage"), ("a", "d", 60, 0.02, ""), ("a", "e", 5, "", "")]
+    pairs.write_text("seqid_1,seqid_2,raw_dist,relatedness_index,flags\n" + "".join(",".join(map(str, r)) + "\n" for r in rows))
+    links = tmp_path / "links.csv"
+    links.write_text("source,target,distance\na,b,0.01\nb,c,0.02\n")
+    table = iap_support.write_sensitivity(links, pairs, 0.2, tmp_path / "sens.csv")
+    by_rule = {r["rule"]: r for r in table}
+    shape = lambda rule: tuple(by_rule[rule][k] for k in ("nodes", "links", "clusters", "largest_cluster"))  # noqa: E731
+    assert [r["min_index"] for r in table[:6]] == ["0.5", "0.25", "0.2", "0.1", "0.05", "0.01"]  # strictest first; this run's 0.2 is added
+    assert shape("relatedness index >= 0.5") == (2, 1, 1, 2)  # only a-b
+    assert shape("relatedness index >= 0.2") == (3, 2, 1, 3)  # a-b, b-c
+    assert shape("relatedness index >= 0.05") == (4, 3, 1, 4) and by_rule["relatedness index >= 0.05"]["flagged_links"] == 1
+    assert shape("relatedness index >= 0.01") == (4, 4, 1, 4)
+    assert shape("fixed threshold of 57 SNPs") == (5, 4, 1, 5)  # a-b, b-c, c-d and a-e (too far apart in time for an index, but only 5 SNPs); a-d at 60 is over
+    assert shape("main clustering of this run") == (3, 2, 1, 3)
+    assert [r["this_run"] for r in table[:6]] == ["FALSE", "FALSE", "TRUE", "FALSE", "FALSE", "FALSE"]  # the cutoff chosen beforehand
+    assert set(table[0]) == set(iap_support.SENSITIVITY_FIELDS)  # no score, rank or "best" column
+    again = iap_support.write_sensitivity(links, pairs, 0.05, tmp_path / "sens2.csv")
+    assert len(again) == len(table) - 1  # a run that used a cutoff already in the set adds no row

@@ -129,7 +129,7 @@ def _check_label_options(args: argparse.Namespace) -> None:
             registry = labels.load_registry(args.registry)
             registry.check_definition(_label_track(args), _label_definition(args))
             if args.iap_model:  # the IAP clusters are a second track in the same registry, pinned to their own definition
-                registry.check_definition(iap_support.TRACK, iap_support.label_definition(args.iap_alpha))
+                registry.check_definition(iap_support.TRACK, iap_support.label_definition(args.iap_min_index))
         what = "will be created" if new else labels.describe(args.registry)
         print(f"Cluster label registry: {args.registry} ({what}); this run {'saves its labels' if args.update_registry else 'does not change it'}.")
     else:
@@ -206,8 +206,8 @@ def command_run(args: argparse.Namespace) -> int:
     if args.iap_model:
         iap.check_region(args.region, args.region_strategy)
         collection_dates = iap.collection_dates(metadata_rows, args.date_column)
-        if not 0 <= args.iap_alpha <= 1:
-            raise ValueError(f"--iap-alpha must be between 0 and 1, got {args.iap_alpha}")
+        if not 0 <= args.iap_min_index <= 1:
+            raise ValueError(f"--iap-min-index must be between 0 and 1, got {args.iap_min_index}")
 
     if args.dry_run:
         genotype_argv_display = [
@@ -265,7 +265,7 @@ def command_run(args: argparse.Namespace) -> int:
                 print(workflow.shell_join(["write_iap_pairs", str(genotype_dir / iap.IAP_FILENAME), str(clustering_fasta)]))
         if args.iap_model:
             print(workflow.shell_join(["merge_iap_pairs", str(outdir / iap.IAP_FILENAME)]))
-            print(workflow.shell_join(["write_iap_support", "--alpha", str(args.iap_alpha), str(outdir)]))
+            print(workflow.shell_join(["write_iap_support", "--min-index", str(args.iap_min_index), str(outdir)]))
         return 0
 
     if args.reuse_alignments and not args.reuse_alignments.is_dir():
@@ -554,13 +554,14 @@ def command_run(args: argparse.Namespace) -> int:
             return outdir / "by_genotype" / workflow.safe_genotype_name(genotype) / f"iap_{kind}.csv"
 
         support = stages.write_iap_support(
-            primary_clusters_csv, primary_links_csv, outdir / iap.IAP_FILENAME, args.iap_alpha, outdir,
+            primary_clusters_csv, primary_links_csv, outdir / iap.IAP_FILENAME, args.iap_min_index, outdir,
             variants_csv, metadata_rows, args.patient_column, args.sample_column,
             registry=args.registry, update_registry=args.update_registry,
             prefix=args.iap_label_prefix, label_date=args.label_date, genotype_tables=iap_table,
             allow_mismatch=args.allow_registry_mismatch,
         )
-        print(iap_support.describe(support, args.iap_alpha))
+        print(iap_support.describe(support, args.iap_min_index))
+        print(f"Cutoff sensitivity (descriptive; choose the cutoff beforehand): {outdir / iap_support.SENSITIVITY_FILENAME}")
         iap_cluster_tables = [(g, iap_table(g, "clusters")) for g in iap_tables]
         iap_link_tables = [(g, iap_table(g, "links")) for g in iap_tables]
 
@@ -843,13 +844,13 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
-        "--iap-alpha",
+        "--iap-min-index",
         metavar="FLOAT",
         type=float,
-        default=iap.DEFAULT_ALPHA,
+        default=iap.DEFAULT_MIN_INDEX,
         help=(
             f"With --iap-model: pairs with a relatedness index of at least this are linked by the "
-            f"model (default: {iap.DEFAULT_ALPHA}; higher is stricter). Writes {iap_support.LINKS_FILENAME} "
+            f"model (default: {iap.DEFAULT_MIN_INDEX}; higher is stricter: 0.05 keeps about 95%% of truly related pairs, 0.5 about half). Writes {iap_support.LINKS_FILENAME} "
             f"(the main links with their index), {iap_support.EDGES_FILENAME} and {iap_support.CLUSTERS_FILENAME} "
             f"(clusters from the model's links alone, labelled in --registry as track 'iap') and "
             f"{iap_support.COMPARISON_FILENAME} (main against IAP clusters)."

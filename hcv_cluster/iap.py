@@ -40,7 +40,7 @@ from . import metadata, methods, prep
 
 IAP_FILENAME = "iap_pairs.csv"
 DEFAULT_DATE_COLUMN = "sample_collection_date"
-DEFAULT_ALPHA = 0.05  # a link is IAP-supported when its relatedness index is at least this
+DEFAULT_MIN_INDEX = 0.05  # a pair is linked when its relatedness index is at least this; 0.05 keeps about 95% of truly related pairs
 DATE_FORMATS = "d/m/yyyy, yyyy-mm-dd or d-Mon-yy (e.g. 5-Mar-24)"
 CALIBRATED_REGION = "e1-e2"
 IAP_FIELDS = ("seqid_1", "seqid_2", "raw_dist", "time_diff_years", "snp_rate", "subtype", "relatedness_index", "note",

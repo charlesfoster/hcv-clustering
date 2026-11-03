@@ -243,7 +243,7 @@ def write_iap_support(
     clusters_csv: Path,
     links_csv: Path,
     pairs_csv: Path,
-    alpha: float,
+    min_index: float,
     out_dir: Path,
     variants_csv: Path | None = None,
     metadata_rows: Sequence[Mapping[str, Any]] = (),
@@ -264,14 +264,15 @@ def write_iap_support(
     ``genotype_tables`` (genotype, kind -> path) the IAP clusters and links are also written
     per genotype, which is what the network plots read.
     """
-    if not 0 <= alpha <= 1:
-        raise ValueError(f"--iap-alpha must be between 0 and 1, got {alpha}")
+    if not 0 <= min_index <= 1:
+        raise ValueError(f"--iap-min-index must be between 0 and 1, got {min_index}")
     iap_clusters = out_dir / iap_support.CLUSTERS_FILENAME
+    iap_support.write_sensitivity(links_csv, pairs_csv, min_index, out_dir / iap_support.SENSITIVITY_FILENAME)
     summary = iap_support.write_links_and_clusters(
         links=links_csv,
         pairs=pairs_csv,
         clusters=clusters_csv,
-        alpha=alpha,
+        min_index=min_index,
         out_links=out_dir / iap_support.LINKS_FILENAME,
         out_edges=out_dir / iap_support.EDGES_FILENAME,
         out_clusters=iap_clusters,
@@ -283,7 +284,7 @@ def write_iap_support(
             registry=registry,
             update_registry=update_registry,
             track=iap_support.TRACK,
-            definition=iap_support.label_definition(alpha),
+            definition=iap_support.label_definition(min_index),
             prefix=prefix,
             label_date=label_date,
             out_clusters=iap_clusters,
@@ -727,7 +728,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clusters", type=Path, required=True, help="The run's clusters.csv (labelled, if it is)")
     p.add_argument("--links", type=Path, required=True, help="The run's links.csv (same metric as --clusters)")
     p.add_argument("--pairs", type=Path, required=True, help="The run's iap_pairs.csv")
-    p.add_argument("--alpha", type=float, default=iap.DEFAULT_ALPHA)
+    p.add_argument("--min-index", type=float, default=iap.DEFAULT_MIN_INDEX,
+                   help="Pairs with a relatedness index of at least this are linked (default: %(default)s; higher is stricter)")
     p.add_argument("--variants", type=Path, default=None)
     _add_patient_arguments(p)
     p.add_argument("--registry", type=Path, default=None, help="Label the IAP clusters in this registry (track 'iap')")
@@ -923,12 +925,13 @@ def _cmd_iap_support(args: argparse.Namespace) -> int:
         args.tables_dir.mkdir(parents=True, exist_ok=True)
         tables = lambda genotype, kind: args.tables_dir / f"{genotype}.iap.{kind}.csv"  # noqa: E731
     summary = write_iap_support(
-        args.clusters, args.links, args.pairs, args.alpha, args.outdir, args.variants,
+        args.clusters, args.links, args.pairs, args.min_index, args.outdir, args.variants,
         _load_metadata(args.metadata), args.patient_column, args.sample_column,
         registry=args.registry, update_registry=args.update_registry, registry_out=args.registry_out,
         prefix=args.label_prefix, label_date=args.label_date, genotype_tables=tables,
     )
-    print(iap_support.describe(summary, args.alpha))
+    print(iap_support.describe(summary, args.min_index))
+    print(f"Cutoff sensitivity (descriptive; choose the cutoff beforehand): {args.outdir / iap_support.SENSITIVITY_FILENAME}")
     return 0
 
 

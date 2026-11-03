@@ -31,8 +31,8 @@ workflow {
     if (params.iap_model && !(params.iap_ambiguity in ['average', 'skip'])) {
         error "--iap_ambiguity must be average or skip (got ${params.iap_ambiguity})"
     }
-    if (params.iap_model && ((params.iap_alpha as double) < 0 || (params.iap_alpha as double) > 1)) {
-        error "--iap_alpha must be between 0 and 1 (got ${params.iap_alpha})"
+    if (params.iap_model && ((params.iap_min_index as double) < 0 || (params.iap_min_index as double) > 1)) {
+        error "--iap_min_index must be between 0 and 1 (got ${params.iap_min_index})"
     }
     if (params.update_registry && !params.registry) {
         error "--update_registry requires --registry <directory>"

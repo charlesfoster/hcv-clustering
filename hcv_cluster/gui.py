@@ -353,17 +353,17 @@ def _run_tab() -> None:
             disabled=not run_iap,
             help=f"Metadata column with each sample's collection date, as {iap.DATE_FORMATS}.",
         ).strip()
-    iap_alpha = st.number_input(
-        "IAP alpha",
+    iap_min_index = st.number_input(
+        "IAP minimum relatedness index",
         min_value=0.0,
         max_value=1.0,
-        value=iap.DEFAULT_ALPHA,
+        value=iap.DEFAULT_MIN_INDEX,
         step=0.01,
         format="%.3f",
         disabled=not run_iap,
         help=(
-            "A link counts as supported by the IAP model when its relatedness index is at least "
-            "this. Higher is stricter: alpha is the share of truly related pairs you accept losing."
+            "Pairs with a relatedness index of at least this are linked by the IAP model. Higher is stricter: "
+            "0.05 keeps about 95% of truly related pairs, 0.5 about half."
         ),
     )
     iap_error: str | None = None
@@ -672,7 +672,7 @@ def _run_tab() -> None:
             if metadata_path is not None:
                 argv.extend(["--metadata", str(metadata_path)])
             if run_iap:
-                argv.extend(["--iap-model", "--date-column", date_column, "--iap-alpha", str(iap_alpha)])
+                argv.extend(["--iap-model", "--date-column", date_column, "--iap-min-index", str(iap_min_index)])
             parser = cli.build_parser()
             args = parser.parse_args(argv)
 

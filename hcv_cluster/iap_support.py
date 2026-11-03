@@ -2,7 +2,7 @@
 """IAP-only clusters, and how they compare with the main clusters.
 
 The IAP clusters use the relatedness index alone: every pair of dated sequences within a
-subtype with an index of at least ``alpha`` is linked, whatever its genetic distance, and
+subtype with an index of at least ``min_index`` is linked, whatever its genetic distance, and
 the clusters are the connected components of those links (the same code as the main
 clustering). The main clusters (TN93, or SNP) are untouched, so the two sets are
 independent and can be compared:
@@ -33,6 +33,13 @@ COMPARISON_FILENAME = "clusters.comparison.csv"
 LABELS_FILENAME = "cluster_labels.iap.csv"
 CHANGES_FILENAME = "label_changes.iap.csv"
 
+SENSITIVITY_FILENAME = "iap_sensitivity.csv"
+# Fixed in code and never chosen by the user. A table whose cutoffs could be picked after looking at the
+# clusters would let the cutoff be tuned to the answer wanted; every run reports every one of these.
+SENSITIVITY_CUTOFFS = (0.5, 0.25, 0.1, 0.05, 0.01)
+STATIC_SNPS = 57  # a fixed SNP threshold (about 3% of E1-E2), the static rule usually used to cluster HCV
+SENSITIVITY_FIELDS = ("rule", "min_index", "this_run", "nodes", "links", "clusters", "largest_cluster", "flagged_links")
+
 LINK_FIELDS = ("raw_dist", "time_diff_years", "relatedness_index", "supported", "note", "flags")
 EDGE_FIELDS = ("source", "target", "distance", "raw_dist", "time_diff_years", "relatedness_index", "in_main", "flags")
 CLUSTER_FIELDS = ("sample_id", "genotype", "cluster_id", "source_cluster_id", "cluster_size")
@@ -51,13 +58,13 @@ class SupportSummary:
     iap: Counter = field(default_factory=Counter)
 
 
-def label_definition(alpha: float) -> dict[str, object]:
-    """What the IAP labels are valid for: a different alpha or model fit changes who clusters."""
+def label_definition(min_index: float) -> dict[str, object]:
+    """What the IAP labels are valid for: a different minimum index or model fit changes who clusters."""
     return {
         "metric": TRACK,
         "region": iap.CALIBRATED_REGION,
         "region_strategy": "fixed",
-        "alpha": alpha,
+        "min_index": min_index,
         "model": [iap.MODEL_A, iap.MODEL_B, iap.MODEL_C],
     }
 
@@ -77,7 +84,7 @@ def _write(path: Path, fieldnames: Sequence[str], rows: Sequence[Mapping[str, st
 
 
 def build_link_tables(
-    links: Path, pairs: Path, alpha: float
+    links: Path, pairs: Path, min_index: float
 ) -> tuple[list[str], list[dict[str, str]], list[dict[str, str]]]:
     """Annotate the main links with the index, and list every IAP link, in one pass over the pairs."""
     link_fields, main_links = _read(links)
@@ -91,7 +98,7 @@ def build_link_tables(
             if main is not None:
                 found[key] = pair
             index = pair["relatedness_index"]
-            if index and float(index) >= alpha:
+            if index and float(index) >= min_index:
                 edges.append(
                     {
                         "source": pair["seqid_1"],
@@ -114,12 +121,58 @@ def build_link_tables(
                 "raw_dist": pair["raw_dist"] if pair else "",
                 "time_diff_years": pair["time_diff_years"] if pair else "",
                 "relatedness_index": index,
-                "supported": "TRUE" if index and float(index) >= alpha else "FALSE",
+                "supported": "TRUE" if index and float(index) >= min_index else "FALSE",
                 "note": pair["note"] if pair else NOTE_NO_DATE,
                 "flags": pair.get("flags", "") if pair else "",
             }
         )
     return [*link_fields, *LINK_FIELDS], annotated, edges
+
+
+def _shape(edges: Sequence[tuple[str, str, bool | None]]) -> dict[str, int | str]:
+    """Nodes, links, clusters (connected components) and the largest cluster of a set of links."""
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for a, b, _flagged in edges:
+        parent[find(a)] = find(b)
+    sizes = Counter(find(node) for node in list(parent))
+    flagged = sum(bool(f) for _a, _b, f in edges) if any(f is not None for _a, _b, f in edges) else ""
+    return {"nodes": len(parent), "links": len(edges), "clusters": len(sizes),
+            "largest_cluster": max(sizes.values(), default=0), "flagged_links": flagged}
+
+
+def write_sensitivity(links: Path, pairs: Path, min_index: float, out: Path) -> list[dict[str, int | str]]:
+    """How many nodes, links and clusters each cutoff gives, beside a fixed SNP threshold and the main clustering.
+
+    This is descriptive. The cutoffs are the fixed ``SENSITIVITY_CUTOFFS`` (plus the one this run used, if it
+    is not among them), all of them are always written, no row is ranked or marked best, and nothing is
+    tested: the cutoff for a run is chosen beforehand, and this shows how much the clusters depend on it.
+    """
+    pair_rows: list[tuple[str, str, float, float | None, bool]] = []
+    with pairs.open(newline="", encoding="utf-8") as handle:
+        for pair in csv.DictReader(handle):
+            index = pair["relatedness_index"]
+            pair_rows.append((pair["seqid_1"], pair["seqid_2"], float(pair["raw_dist"]),
+                              float(index) if index else None, bool(pair.get("flags"))))
+    rows: list[dict[str, int | str]] = []
+    for cutoff in sorted({*SENSITIVITY_CUTOFFS, min_index}, reverse=True):
+        edges = [(a, b, flagged) for a, b, _raw, index, flagged in pair_rows if index is not None and index >= cutoff]
+        rows.append({"rule": f"relatedness index >= {cutoff:g}", "min_index": f"{cutoff:g}",
+                     "this_run": "TRUE" if cutoff == min_index else "FALSE", **_shape(edges)})
+    static = [(a, b, flagged) for a, b, raw, _index, flagged in pair_rows if raw <= STATIC_SNPS]
+    rows.append({"rule": f"fixed threshold of {STATIC_SNPS} SNPs", "min_index": "", "this_run": "", **_shape(static)})
+    _fields, main_links = _read(links)
+    rows.append({"rule": "main clustering of this run", "min_index": "", "this_run": "",
+                 **_shape([(link["source"], link["target"], None) for link in main_links])})
+    _write(out, SENSITIVITY_FIELDS, rows)
+    return rows
 
 
 def recluster(
@@ -206,11 +259,11 @@ COMPARISON_FIELDS = ("set", "cluster_id", "cluster_label", "genotype", "sequence
 
 
 def write_links_and_clusters(
-    *, links: Path, pairs: Path, clusters: Path, alpha: float,
+    *, links: Path, pairs: Path, clusters: Path, min_index: float,
     out_links: Path, out_edges: Path, out_clusters: Path,
 ) -> SupportSummary:
     """Write the annotated main links, the IAP links and the (unlabelled) IAP clusters."""
-    link_fields, link_rows, edges = build_link_tables(links, pairs, alpha)
+    link_fields, link_rows, edges = build_link_tables(links, pairs, min_index)
     _write(out_links, link_fields, link_rows)
     _write(out_edges, EDGE_FIELDS, edges)
     _write(out_clusters, CLUSTER_FIELDS, recluster(_read(clusters)[1], edges))
@@ -262,12 +315,12 @@ def write_comparison(
     return summary
 
 
-def describe(summary: SupportSummary, alpha: float) -> str:
+def describe(summary: SupportSummary, min_index: float) -> str:
     def clusters(counts: Counter) -> str:
         return f"{sum(counts.values())} ({counts[IDENTICAL]} identical in the other set)"
 
     return (
-        f"IAP model (alpha {alpha:g}): {summary.supported_links} of {summary.links} main link(s) supported, "
+        f"IAP model (minimum index {min_index:g}): {summary.supported_links} of {summary.links} main link(s) supported, "
         f"{summary.iap_only_links} link(s) only the model makes; clusters: main {clusters(summary.main)}, "
         f"IAP {clusters(summary.iap)}"
         + (f"; {summary.flagged_iap_links} of the model's links involve a flagged pair (low coverage or ambiguous)"

@@ -193,7 +193,7 @@ process MERGE {
 
 process LABEL {
     publishDir "${params.outdir}", mode: "copy", saveAs: { fn ->
-        fn.startsWith("registry_out/") ? null : (fn == "clusters.labelled.csv" ? "clusters.csv" : fn)
+        fn.startsWith("registry_out") ? null : (fn == "clusters.labelled.csv" ? "clusters.csv" : fn)
     }
     // Write the updated registry back to where the caller keeps it.
     publishDir "${params.registry}", mode: "copy", overwrite: true,
@@ -209,6 +209,7 @@ process LABEL {
     path "cluster_labels.csv",                         emit: labels
     path "label_changes.csv",                          emit: changes
     path "registry_out/*",                             emit: registry, optional: true
+    path "registry_out",                               emit: registry_dir, optional: true  // for the IAP labels to continue from
 
     script:
     """
@@ -226,6 +227,102 @@ process LABEL {
         --label-prefix ${params.label_prefix} \\
         ${optionally('--label-date', params.label_date)} \\
         --out-clusters clusters.labelled.csv
+    """
+}
+
+// Fails within seconds of the start of the run, instead of after the alignment, if --iap_model
+// cannot work: another region than the one the model is calibrated for, or bad collection dates.
+process IAP_CHECK {
+    input:
+    path metadata
+
+    script:
+    if (metadata.name == "NO_FILE") error "--iap_model requires metadata with a ${params.date_column} column"
+    """
+    ${stage('iap-check')} --metadata ${metadata} --date-column ${params.date_column} \\
+        --region ${params.region ?: 'e1-e2'} --region-strategy ${params.region_strategy}
+    """
+}
+
+process IAP_PAIRS {
+    tag { genotype }
+    publishDir path: { "${params.outdir}/by_genotype/${genotype}" }, mode: "copy", saveAs: { fn -> "iap_pairs.csv" }
+
+    input:
+    tuple val(genotype), path(clustering)
+    path variants
+    path metadata
+
+    output:
+    path "${genotype}.iap_pairs.csv"
+
+    script:
+    """
+    ${stage('iap-pairs')} \\
+        --input ${clustering} --genotype ${genotype} --metadata ${metadata} --date-column ${params.date_column} \\
+        --variants ${variants} --region ${params.region ?: 'e1-e2'} --region-strategy ${params.region_strategy} \\
+        --out ${genotype}.iap_pairs.csv
+    """
+}
+
+process IAP_MERGE {
+    publishDir "${params.outdir}", mode: "copy"
+
+    input:
+    path "pairs/*"
+
+    output:
+    path "iap_pairs.csv"
+
+    script:
+    // Files are staged as <genotype>.iap_pairs.csv; the stage wants GENOTYPE=PATH pairs.
+    """
+    pairs() { for f in "\$1"/*; do [ -e "\$f" ] && echo "\$(basename "\$f" | sed 's/\\..*//')=\$f"; done; }
+    ${stage('iap-merge')} --pairs \$(pairs pairs) --out iap_pairs.csv
+    """
+}
+
+// IAP-only clusters (links from the relatedness index alone, --iap_alpha), labelled as their own
+// registry track, and their comparison with the main clusters. The registry it reads is the one the
+// main LABEL step has just updated, so the two steps never overwrite each other's tracks.
+process IAP_SUPPORT {
+    // <genotype>.iap.<kind>.csv files go to by_genotype/<genotype>/iap_<kind>.csv
+    publishDir "${params.outdir}", mode: "copy", saveAs: { fn ->
+        if (fn.startsWith("registry_out")) return null
+        if (!fn.startsWith("iap_tables/")) return fn
+        def parts = fn.tokenize("/")[-1].tokenize(".")
+        "by_genotype/${parts[0..-4].join('.')}/iap_${parts[-2]}.csv"
+    }
+    publishDir "${params.registry}", mode: "copy", overwrite: true,
+        saveAs: { fn -> fn.startsWith("registry_out/") ? fn.replaceFirst("registry_out/", "") : null },
+        enabled: params.update_registry && params.registry
+
+    input:
+    path clusters
+    path links
+    path pairs
+    path variants
+    path metadata
+    path registry
+
+    output:
+    path "links.iap_information.csv"
+    path "links.iap.csv",                 emit: links
+    path "clusters.iap.csv",              emit: clusters
+    path "clusters.comparison.csv",       emit: comparison
+    path "cluster_labels.iap.csv",        optional: true
+    path "label_changes.iap.csv",         optional: true
+    path "iap_tables/*.csv",              emit: genotype_tables
+    path "registry_out/*",                optional: true
+
+    script:
+    def registryArgs = params.registry
+        ? "--registry ${registry} ${params.update_registry ? '--update-registry --registry-out registry_out' : ''} --label-prefix ${params.iap_label_prefix} ${optionally('--label-date', params.label_date)}"
+        : ""
+    """
+    ${stage('iap-support')} --clusters ${clusters} --links ${links} --pairs ${pairs} \\
+        --alpha ${params.iap_alpha} --variants ${variants} ${patientArgs(metadata)} \\
+        ${registryArgs} --tables-dir iap_tables --outdir .
     """
 }
 
@@ -274,12 +371,15 @@ process PLOT {
     path clusters          // the final (labelled) primary cluster table
     path links
     path "snp/*"           // snp.clusters.csv + snp.links.csv when --distance both
+    path "iap/*"           // clusters.iap.csv + links.iap.csv when --iap_model
     path "tables/*"        // every <genotype>.<method>.clusters.csv / .links.csv
     path metadata
 
     output:
-    path "by_genotype", optional: true
-    path "*network.*",   optional: true
+    // Individual files: publishing the by_genotype directory itself would replace the one
+    // already holding each subtype's tables.
+    path "by_genotype/*/*network.*", optional: true
+    path "*network.*",               optional: true
 
     script:
     def metadataArg = metadata.name == "NO_FILE" ? "" : "--metadata ${metadata}"
@@ -304,6 +404,7 @@ process PLOT {
     [ "${clusters}" = clusters.csv ] || cp ${clusters} clusters.csv
     [ "${links}" = links.csv ] || cp ${links} links.csv
     if [ -e snp/snp.clusters.csv ]; then cp snp/snp.clusters.csv clusters.snp.csv; cp snp/snp.links.csv links.snp.csv; fi
+    if [ -e iap/clusters.iap.csv ]; then cp iap/clusters.iap.csv iap/links.iap.csv .; fi
     ${stage('plot')} --distance ${params.distance} --tables-dir tables --outdir . ${metadataArg} \\
         ${scalars} ${lists} ${params.plot_hide_singletons ? '--plot-hide-singletons' : ''}
     """

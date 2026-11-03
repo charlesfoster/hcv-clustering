@@ -41,6 +41,7 @@ biopython = "1.88.*"
 mafft = "7.526.*"
 minimap2 = "2.31.*"
 tn93 = "1.1.*"
+scipy = "1.18.*"
 
 # Network plots (HTML works anywhere; PNG/SVG additionally need a local Chrome).
 [feature.viz.dependencies]

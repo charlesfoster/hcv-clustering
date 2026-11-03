@@ -226,6 +226,46 @@ pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --patient-colu
 
 `cluster_size` is then the number of distinct **patients**, so a cluster whose sequences all come from one person behaves like a singleton: it is not drawn as a cluster, gets no persistent label, and the sample audit says why. `clusters.csv` always reports `cluster_sequences`, `cluster_samples` and `cluster_patients` as well, with or without this option. `--sample-column` names a column identifying the physical sample (one patient can give several), so that `cluster_samples` counts distinct samples. A sample with no patient value counts as its own patient. Clustering itself is unchanged: sequences are still linked by distance, and only the counting differs.
 
+### IAP model: relatedness from SNPs and time
+
+`--iap-model` (or **Run IAP model** in the GUI) runs the IAP relatedness model and writes its results to `iap_pairs.csv`. It is calibrated for the full E1-E2 region (HVR1 included), so the run aborts at once with any other `--region` (including `e1-e2-nohvr1`) or with `--region-strategy max-usable`. It needs `--metadata` with a column of collection dates (`sample_collection_date` by default; name another with `--date-column`), written `d/m/yyyy`, `yyyy-mm-dd` or `d-Mon-yy` (e.g. `5-Mar-24`; a two-digit year of 69 or more is 19xx, otherwise 20xx):
+
+```bash
+pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --iap-model
+```
+
+| column | meaning |
+| --- | --- |
+| `seqid_1`, `seqid_2` | the two sequences |
+| `raw_dist` | number of nucleotides that differ between them (the `snp_count` of `snp.csv`) |
+| `time_diff_years` | years between the two collection dates, e.g. 1/7/1995 to 1/12/1997 is 29 months = 2.416667 |
+| `snp_rate` | `raw_dist / time_diff_years` (empty when both were collected on the same day) |
+| `subtype` | the subtype both sequences belong to (e.g. `1a`) |
+| `relatedness_index` | chance that two sequences from one transmission chain, collected this far apart, would differ at *more* sites than `raw_dist` (low = unlikely to be related); empty when the pair is more than about 22 years apart |
+| `note` | why a value is empty: `too_far_apart` (no `relatedness_index`, the pair is more than about 22 years apart) or `same_day` (no `snp_rate`, the samples were collected on the same day); otherwise empty |
+
+The index is `1 - CDF` of a negative binomial whose mean is `4.417 * years + 9.634` and whose variance is `10.383²` (parameters in `hcv_cluster/iap.py`). Same-day pairs get an index (the model expects about 9.6 differences at 0 years) but no `snp_rate`.
+
+Each subtype's table is written to `by_genotype/<subtype>/iap_pairs.csv`, and `iap_pairs.csv` in the results directory is all of them concatenated (in subtype order).
+
+There is one row for every pair of sequences within a subtype, whatever their distance; pairs are never made across subtypes. Sequences without a collection date are left out (the number is reported). The time difference is whole calendar months over 12, with the day of the month added as a fraction of its month. `raw_dist` counts only sites where both sequences have a base, so, as in the clustering, **insertions, deletions and N positions add nothing to it**. The file grows with the square of the number of sequences in a subtype.
+
+**IAP clusters, and how they compare with the main ones.** The model also gives a second, independent clustering. `--iap-alpha` (default 0.05; **IAP alpha** in the GUI, `--iap_alpha` in Nextflow) links every pair of dated sequences within a subtype whose `relatedness_index` is at least alpha, whatever its genetic distance, and the IAP clusters are the connected components of those links. Higher alpha is stricter: alpha is the share of truly related pairs you accept losing. The main clusters (TN93, or SNP) are unchanged, and these files are added:
+
+| file | contents |
+| --- | --- |
+| `clusters.iap.csv` | the IAP clusters, in the format of `clusters.csv` (all sequences; one with no collection date or no IAP link is a singleton). IDs look like `1a_IAP0001` so they cannot be mistaken for main ones (`1a_C0001`). With `--registry` they carry `cluster_label` too |
+| `links.iap.csv` | every IAP link, with `raw_dist`, `time_diff_years`, `relatedness_index`, the main `distance` and `in_main` (`FALSE` for a pair only the model links) |
+| `links.iap_information.csv` | every main link, plus `raw_dist`, `time_diff_years`, `relatedness_index`, `supported` (`TRUE`/`FALSE`) and `note`. A link the model cannot judge is `FALSE`, and `note` says why: `too_far_apart`, or `no_collection_date` when a sequence has no date |
+| `clusters.comparison.csv` | one row per cluster of two or more sequences in either set (`set` = `main` or `iap`), saying how the other set sees its members: `identical` (`concordant` = `TRUE`), `contained` (all in one larger cluster of the other set), `split` (divided between clusters or left out) or `not_clustered_in_other`, with the `counterparts` (`id(shared sequences)`) and how many members are unclustered there |
+| `by_genotype/<subtype>/iap_clusters.csv`, `iap_links.csv` | the same per subtype (what the network plots read) |
+
+To find discordance, read `clusters.comparison.csv` for the clusters, `links.iap.csv` with `in_main = FALSE` for links only the model makes, and `links.iap_information.csv` with `supported = FALSE` for main links the model rejects. With `--distance both` the main side is TN93.
+
+**Labels.** The IAP clusters have their own label track, `iap`, in the same `--registry`: its own membership, merges and splits, and its own label prefix (`--iap-label-prefix`, default `HCV_IAP`, so `HCV_IAP-2610-001`), which keeps its numbering independent of the main labels (`HCV-2610-001`). The track is tied to its alpha and model parameters, so a different `--iap-alpha` is refused for that registry (use another registry, as for a different threshold). `cluster_labels.iap.csv` and `label_changes.iap.csv` report the IAP labels.
+
+**Plots.** With `--plot-network`, the IAP clusters are plotted alongside the main ones as `iap_network.*` (overall and per subtype), and in the GUI **Clusters shown** switches the network between the main clusters and **IAP model**.
+
 ### One-page progress report
 
 `hcv-report RUN_DIR` (or `pixi run hcv-report RUN_DIR`) writes `RUN_DIR/report.html`: an A4 summary for a regular update. It is a standalone command, run on demand against the output folder of a finished run; `hcv-cluster run --generate-report` (or the tick box in the GUI, or `generate_report = true` in your settings) runs it for you at the end of a run, and never off by surprise: it is off unless asked for. Open the HTML in any browser and click its **Save as PDF** button (it opens the browser's print window; choose "Save as PDF"), or let `--pdf` / `--generate-report` make the PDF directly where Chrome or Chromium is installed. It reads files the run already wrote (`sample_audit.csv`, `metadata.surviving_samples.csv`, `links.csv`, and where present `label_changes.csv` and `run_info.json`). It has two bands:
@@ -279,7 +319,7 @@ nextflow run main.nf -profile test,docker --outdir test_results
 
 Parameters mirror the CLI flags with underscores (`--distance both`, `--region core-e2`, `--min_coverage 0.8`, `--genotype 1a`, `--registry label_registry --update_registry true`); see `nextflow.config` for the full list. Reference records ship in `hcv_cluster/data/genbank`, so no network access is needed. Use `-resume` to skip steps whose inputs have not changed, and `--reuse_alignments <previous outdir>` to re-align only new or changed sequences (the same behaviour as `--reuse-alignments` on the CLI). Profiles: `standard` (tools on `PATH`), `docker`, `singularity`, `slurm`.
 
-Network plots use the same options as the CLI with underscores: `--plot_network html --plot_scope both --plot_color_by location`, where the colour field is a column of your `--metadata` CSV. Interactive HTML works everywhere, including the container; PNG and SVG additionally need a local Chrome, which the container does not include, so they are skipped there with a warning.
+The IAP model input is `--iap_model true` (with `--metadata`, and `--date_column` if your dates are not in `sample_collection_date`, and `--iap_alpha`). Network plots use the same options as the CLI with underscores: `--plot_network html --plot_scope both --plot_color_by location`, where the colour field is a column of your `--metadata` CSV. Interactive HTML works everywhere, including the container; PNG and SVG additionally need a local Chrome, which the container does not include, so they are skipped there with a warning.
 
 Releases and versioning are described in [docs/RELEASING.md](docs/RELEASING.md) and [CHANGELOG.md](CHANGELOG.md).
 
@@ -290,7 +330,7 @@ include { HCV_CLUSTER } from './hcv-cluster/workflows/hcv_cluster.nf'
 HCV_CLUSTER(fasta_channel, metadata_channel)   // metadata: a CSV, or assets/NO_FILE
 ```
 
-The stages are also available as `pixi run python -m hcv_cluster.stages <stage>` (or the `hcv-stage` command in a pip install) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
+The stages are also available as `pixi run python -m hcv_cluster.stages <stage>` (or the `hcv-stage` command in a pip install) (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`, `audit`, `plot`, `iap-check`, `iap-pairs`, `iap-merge`, `iap-support`), alongside `python -m hcv_cluster.genotyping` and `python -m hcv_cluster.prep prep-align`, for running steps by hand or from another workflow engine.
 
 **Persistent labels in a workflow.** A process cannot modify its input directory, so the `LABEL` step reads the registry and, only with `--update_registry true`, publishes the updated files back to the `--registry` directory. Run labelling-enabled pipelines one at a time against a given registry. The platform that launches runs is responsible for serialising them and for keeping the registry directory backed up.
 
@@ -375,6 +415,8 @@ results/
       clusters.csv                      cluster membership for this genotype
       snp_links.csv                     SNP-based pairs (if --distance both)
       snp_clusters.csv                  SNP-based clusters (if --distance both)
+      iap_pairs.csv                     this subtype's IAP pairs (if --iap-model)
+      iap_clusters.csv, iap_links.csv   this subtype's IAP clusters and links (if --iap-model)
     3a/
       ...
   sample_audit.csv                      one row per input FASTA record: overall pass/fail, the stage that excluded it, and why
@@ -384,6 +426,11 @@ results/
   clusters.csv                          merged cluster table, all genotypes, genotype-qualified IDs (+ cluster_label with --registry)
   cluster_labels.csv                    labels present in this run (with --registry)
   label_changes.csv                     labels created, merged or split by this run (with --registry)
+  iap_pairs.csv                         SNPs, years apart and SNPs/year for every dated pair within a subtype, all subtypes (with --iap-model)
+  clusters.iap.csv, links.iap.csv       IAP-only clusters and links (with --iap-model)
+  links.iap_information.csv             links.csv plus relatedness_index and supported (with --iap-model)
+  clusters.comparison.csv               main against IAP clusters: identical, contained, split, absent (with --iap-model)
+  cluster_labels.iap.csv                IAP labels present in this run (with --iap-model and --registry)
   sequence_variants.csv                 repeated FASTA IDs: renames and keep/drop decisions (only if present)
   input.variants_resolved.fasta         input with repeated IDs resolved (only if present)
   clusters.snp.csv                      merged SNP clusters (if --distance both)
@@ -544,6 +591,7 @@ hcv_cluster/            the Python package (also pip-installable: pyproject.toml
   genotyping.py         minimap2 subtype assignment
   prep.py               MAFFT alignment and region extraction
   methods.py            region thresholds, SNP distance
+  iap.py iap_support.py the IAP model: pairwise table and relatedness index; supported links and clusters
   plotting.py           network plots (CLI flags and the plot stage)
   report.py             the standalone one-page HTML progress report (hcv-report)
   variants.py audit.py labels.py metadata.py viz.py gui.py workflow.py

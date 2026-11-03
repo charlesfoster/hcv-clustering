@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import genotyping, labels, metadata, plotting, prep, provenance, report, settings, stages, variants, workflow
+from . import genotyping, iap, iap_support, labels, metadata, plotting, prep, provenance, report, settings, stages, variants, workflow
 
 
 from .methods import (  # noqa: F401  (re-exported for existing callers)
@@ -126,7 +126,10 @@ def _check_label_options(args: argparse.Namespace) -> None:
         new = labels.check_location(args.registry, new_ok=args.new_registry or not strict, strict=strict,
                                     need_write=bool(args.update_registry))
         if not new:
-            labels.load_registry(args.registry).check_definition(_label_track(args), _label_definition(args))
+            registry = labels.load_registry(args.registry)
+            registry.check_definition(_label_track(args), _label_definition(args))
+            if args.iap_model:  # the IAP clusters are a second track in the same registry, pinned to their own definition
+                registry.check_definition(iap_support.TRACK, iap_support.label_definition(args.iap_alpha))
         what = "will be created" if new else labels.describe(args.registry)
         print(f"Cluster label registry: {args.registry} ({what}); this run {'saves its labels' if args.update_registry else 'does not change it'}.")
     else:
@@ -199,6 +202,12 @@ def command_run(args: argparse.Namespace) -> int:
     _resolve_lab_defaults(args)
     _check_label_options(args)
     stages.check_grouping_columns(metadata_rows, args.patient_column, args.sample_column)
+    collection_dates = {}
+    if args.iap_model:
+        iap.check_region(args.region, args.region_strategy)
+        collection_dates = iap.collection_dates(metadata_rows, args.date_column)
+        if not 0 <= args.iap_alpha <= 1:
+            raise ValueError(f"--iap-alpha must be between 0 and 1, got {args.iap_alpha}")
 
     if args.dry_run:
         genotype_argv_display = [
@@ -252,6 +261,11 @@ def command_run(args: argparse.Namespace) -> int:
             if args.distance in ("snp", "both"):
                 snp_csv = genotype_dir / "snp.csv"
                 print(workflow.shell_join(["write_snp_csv", str(snp_csv), str(clustering_fasta)]))
+            if args.iap_model:
+                print(workflow.shell_join(["write_iap_pairs", str(genotype_dir / iap.IAP_FILENAME), str(clustering_fasta)]))
+        if args.iap_model:
+            print(workflow.shell_join(["merge_iap_pairs", str(outdir / iap.IAP_FILENAME)]))
+            print(workflow.shell_join(["write_iap_support", "--alpha", str(args.iap_alpha), str(outdir)]))
         return 0
 
     if args.reuse_alignments and not args.reuse_alignments.is_dir():
@@ -352,6 +366,8 @@ def command_run(args: argparse.Namespace) -> int:
     snp_cluster_tables: list[tuple[str, Path]] = []
     link_tables: list[tuple[str, Path]] = []
     snp_link_tables: list[tuple[str, Path]] = []
+    iap_tables: dict[str, Path] = {}
+    iap_base_ids = variant_plan.base_sample_ids()
     for genotype in genotypes:
         print(f"Analysing subtype: {genotype}")
 
@@ -500,6 +516,12 @@ def command_run(args: argparse.Namespace) -> int:
                 f"largest: {snp_st['largest']}"
             )
             print(f"          {_snp_count_summary(snp_links)}")
+        if args.iap_model:
+            iap_tables[genotype] = genotype_dir / iap.IAP_FILENAME
+            summary = iap.write_pairs(
+                clustering_fasta, genotype, collection_dates, iap_tables[genotype], iap_base_ids
+            )
+            print(f"--> {iap.describe(summary, iap_tables[genotype])}")
         print()
 
     primary_clusters_csv = outdir / "clusters.csv"
@@ -518,8 +540,29 @@ def command_run(args: argparse.Namespace) -> int:
     for clusters_path in [path for _, path in cluster_tables + snp_cluster_tables]:
         stages.annotate_clusters(clusters_path, variants_csv, metadata_rows, args.patient_column, args.sample_column)
 
+    if args.iap_model:
+        iap_rows = iap.merge_pairs(iap_tables, outdir / iap.IAP_FILENAME)
+        print(f"IAP model: {iap_rows} dated pair(s), all subtypes, written to {outdir / iap.IAP_FILENAME}")
+
     if args.registry is not None:
         _apply_cluster_labels(args, outdir, primary_clusters_csv)
+
+    iap_cluster_tables: list[tuple[str, Path]] = []
+    iap_link_tables: list[tuple[str, Path]] = []
+    if args.iap_model:
+        def iap_table(genotype: str, kind: str) -> Path:
+            return outdir / "by_genotype" / workflow.safe_genotype_name(genotype) / f"iap_{kind}.csv"
+
+        support = stages.write_iap_support(
+            primary_clusters_csv, primary_links_csv, outdir / iap.IAP_FILENAME, args.iap_alpha, outdir,
+            variants_csv, metadata_rows, args.patient_column, args.sample_column,
+            registry=args.registry, update_registry=args.update_registry,
+            prefix=args.iap_label_prefix, label_date=args.label_date, genotype_tables=iap_table,
+            allow_mismatch=args.allow_registry_mismatch,
+        )
+        print(iap_support.describe(support, args.iap_alpha))
+        iap_cluster_tables = [(g, iap_table(g, "clusters")) for g in iap_tables]
+        iap_link_tables = [(g, iap_table(g, "links")) for g in iap_tables]
 
     _write_sample_outputs(
         args, outdir, input_path, metadata_rows,
@@ -534,6 +577,8 @@ def command_run(args: argparse.Namespace) -> int:
         link_tables,
         snp_cluster_tables,
         snp_link_tables,
+        iap_cluster_tables,
+        iap_link_tables,
     )
 
     provenance.write(
@@ -784,6 +829,48 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         help=adv(
             "Metadata column identifying the physical sample, so cluster_samples counts "
             "distinct samples (one patient can give several). Does not change cluster_size."
+        ),
+    )
+    run_parser.add_argument(
+        "--iap-model",
+        action="store_true",
+        help=(
+            f"Run the IAP model: write {iap.IAP_FILENAME} (per subtype, and merged in the results "
+            "directory) with, for every pair of sequences within a subtype, the raw SNP count, the "
+            "years between their collection dates, the SNPs per year and the relatedness index. "
+            "Requires --metadata with a collection date column (see --date-column) and the "
+            "default e1-e2 region, the one the model is calibrated for."
+        ),
+    )
+    run_parser.add_argument(
+        "--iap-alpha",
+        metavar="FLOAT",
+        type=float,
+        default=iap.DEFAULT_ALPHA,
+        help=(
+            f"With --iap-model: pairs with a relatedness index of at least this are linked by the "
+            f"model (default: {iap.DEFAULT_ALPHA}; higher is stricter). Writes {iap_support.LINKS_FILENAME} "
+            f"(the main links with their index), {iap_support.EDGES_FILENAME} and {iap_support.CLUSTERS_FILENAME} "
+            f"(clusters from the model's links alone, labelled in --registry as track 'iap') and "
+            f"{iap_support.COMPARISON_FILENAME} (main against IAP clusters)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iap-label-prefix",
+        metavar="STR",
+        default=iap_support.DEFAULT_LABEL_PREFIX,
+        help=adv(
+            f"Prefix for the labels of the IAP clusters (default: {iap_support.DEFAULT_LABEL_PREFIX}). "
+            "Separate from --label-prefix, so IAP and main label numbers are independent."
+        ),
+    )
+    run_parser.add_argument(
+        "--date-column",
+        metavar="COLUMN",
+        default=iap.DEFAULT_DATE_COLUMN,
+        help=adv(
+            f"Metadata column holding each sample's collection date ({iap.DATE_FORMATS}) "
+            f"for --iap-model (default: {iap.DEFAULT_DATE_COLUMN})"
         ),
     )
     run_parser.add_argument(

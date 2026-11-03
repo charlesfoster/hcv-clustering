@@ -175,6 +175,19 @@ way, so choosing the p-distance threshold costs you nothing in interpretability.
 
 ---
 
+## How indels are counted (they are not)
+
+Neither distance metric counts an insertion or a deletion as an event.
+
+- **Insertions** relative to the reference are discarded by the alignment (MAFFT runs with `--keeplength`), so they never reach a distance calculation.
+- **Deletions** appear as `-` in the aligned row. The SNP count and p-distance skip any site where either sequence has a gap, N or ambiguity code (`methods.compute_snp_distances_detailed`), so a 3-nt deletion removes 3 sites from `comparable_sites` and adds nothing to `snp_count`: it is neither one event nor three. TN93 also excludes gaps in every `-a` mode except `gapmm` (see above), which the pipeline does not use.
+
+The same SNP count is `raw_dist` in the IAP model's `iap_pairs.csv`.
+
+**To revisit.** Ignoring indels throws away signal: in HCV E1/E2 an indel is a rarer event than a substitution, and a shared deletion is good evidence of relatedness. Worth trying, at least as an experiment, in the main clustering workflow: count each contiguous gap run as one event (not one per nucleotide) alongside the substitutions, or use TN93's `gapmm` for comparison. Open questions are how to score a gap present in only one of two sequences that may simply have low coverage there (N is masked to a gap, so the two are indistinguishable at the moment), and that insertions would need MAFFT without `--keeplength`.
+
+---
+
 ## Why there's no genotype-specific threshold split
 
 A single threshold is used across genotypes, not a per-genotype split:

@@ -18,7 +18,7 @@ from typing import Any
 
 import streamlit as st
 
-from . import cli, genotyping, labels, metadata, prep, settings, viz
+from . import cli, genotyping, iap, labels, metadata, prep, settings, viz
 
 
 REGION_PRESETS_UI = (
@@ -170,6 +170,8 @@ def _scope_metric_file_paths(
 ) -> tuple[Path, Path]:
     """Resolve result files for either the merged graph or a genotype graph."""
     if scope == "All genotypes":
+        if metric == "iap":
+            return outdir / "links.iap.csv", outdir / "clusters.iap.csv"
         if distance == "both" and metric == "snp":
             return outdir / "links.snp.csv", outdir / "clusters.snp.csv"
         return outdir / "links.csv", outdir / "clusters.csv"
@@ -280,6 +282,8 @@ def _figure_svg_bytes(figure: Any) -> bytes:
 
 
 def _metric_file_paths(genotype_dir: Path, distance: str, metric: str) -> tuple[Path, Path]:
+    if metric == "iap":
+        return genotype_dir / "iap_links.csv", genotype_dir / "iap_clusters.csv"
     if distance == "both" and metric == "snp":
         return genotype_dir / "snp_links.csv", genotype_dir / "snp_clusters.csv"
     return genotype_dir / "links.csv", genotype_dir / "clusters.csv"
@@ -330,6 +334,45 @@ def _run_tab() -> None:
                 f"Metadata ready: {len(metadata_preview)} sample(s), "
                 f"{len(metadata_fields)} field(s)."
             )
+    iap_col1, iap_col2 = st.columns(2)
+    with iap_col1:
+        run_iap = st.checkbox(
+            "Run IAP model",
+            disabled=uploaded_metadata is None or metadata_error is not None,
+            help=(
+                f"Write {iap.IAP_FILENAME}: for every pair of sequences within a subtype, the raw "
+                "SNP count, the years between their collection dates, the SNPs per year and the "
+                "relatedness index. Needs a metadata CSV with a collection date column, and the "
+                "e1-e2 region the model is calibrated for."
+            ),
+        ) and uploaded_metadata is not None
+    with iap_col2:
+        date_column = st.text_input(
+            "Collection date column",
+            value=iap.DEFAULT_DATE_COLUMN,
+            disabled=not run_iap,
+            help=f"Metadata column with each sample's collection date, as {iap.DATE_FORMATS}.",
+        ).strip()
+    iap_alpha = st.number_input(
+        "IAP alpha",
+        min_value=0.0,
+        max_value=1.0,
+        value=iap.DEFAULT_ALPHA,
+        step=0.01,
+        format="%.3f",
+        disabled=not run_iap,
+        help=(
+            "A link counts as supported by the IAP model when its relatedness index is at least "
+            "this. Higher is stricter: alpha is the share of truly related pairs you accept losing."
+        ),
+    )
+    iap_error: str | None = None
+    if run_iap and metadata_error is None:
+        try:
+            iap.collection_dates(metadata_preview, date_column)
+        except ValueError as exc:
+            iap_error = str(exc)
+            st.error(f"Cannot run the IAP model: {iap_error}")
     outdir = Path(st.text_input("Output directory", value="results_gui"))
 
     registry_choice = _registry_panel()
@@ -543,10 +586,21 @@ def _run_tab() -> None:
             help="Keep the raw minimap2 PAF alignment file from the genotyping step instead of deleting it — useful for debugging genotype assignment.",
         )
 
+    if run_iap:
+        try:
+            iap.check_region(region, region_strategy)
+        except ValueError as exc:
+            iap_error = str(exc)
+            st.error(f"Cannot run the IAP model: {iap_error}")
+
     run_clicked = st.button(
         "Run pipeline",
         type="primary",
-        disabled=uploaded is None or region_error is not None or metadata_error is not None or registry_choice["error"] is not None,
+        disabled=uploaded is None
+        or region_error is not None
+        or metadata_error is not None
+        or iap_error is not None
+        or registry_choice["error"] is not None,
     )
 
     if run_clicked:
@@ -617,7 +671,8 @@ def _run_tab() -> None:
                 argv.append("--keep-paf")
             if metadata_path is not None:
                 argv.extend(["--metadata", str(metadata_path)])
-
+            if run_iap:
+                argv.extend(["--iap-model", "--date-column", date_column, "--iap-alpha", str(iap_alpha)])
             parser = cli.build_parser()
             args = parser.parse_args(argv)
 
@@ -654,6 +709,12 @@ def _render_results(outdir: Path, distance: str) -> None:
     if distance == "both":
         _show_cluster_table("Merged clusters (SNP)", outdir / "clusters.snp.csv")
         _show_cluster_table("Merged links (SNP)", outdir / "links.snp.csv")
+    has_iap = (outdir / "clusters.iap.csv").exists()
+    if has_iap:
+        _show_cluster_table("IAP clusters (relatedness index alone)", outdir / "clusters.iap.csv")
+        _show_cluster_table("Main vs IAP clusters", outdir / "clusters.comparison.csv")
+        _show_cluster_table("Main links with their relatedness index", outdir / "links.iap_information.csv")
+        _show_cluster_table("IAP links", outdir / "links.iap.csv")
 
     by_genotype_dir = outdir / "by_genotype"
     genotypes = sorted(p.name for p in by_genotype_dir.iterdir() if p.is_dir()) if by_genotype_dir.exists() else []
@@ -676,10 +737,19 @@ def _render_results(outdir: Path, distance: str) -> None:
             st.session_state.view_scope = scopes[0]
         selected_scope = st.selectbox("Network scope", scopes, key="view_scope")
     with col_metric:
-        if distance == "both":
-            metric = st.selectbox("Distance metric", ("tn93", "snp"), key="view_metric")
+        # The IAP clusters are an alternative to the main ones, so it is one more choice here.
+        metrics = (["tn93", "snp"] if distance == "both" else [distance]) + (["iap"] if has_iap else [])
+        if len(metrics) > 1:
+            metric = st.selectbox(
+                "Clusters shown",
+                metrics,
+                format_func=lambda m: {"tn93": "TN93", "snp": "SNP", "iap": "IAP model"}[m]
+                + (" (main)" if m == metrics[0] else ""),
+                key="view_metric",
+                help="Main clusters come from the genetic distance; IAP clusters from the relatedness index alone.",
+            )
         else:
-            metric = distance
+            metric = metrics[0]
             st.write(f"Distance metric: **{metric.upper()}**")
 
     selected_layout = "Spring layout"
@@ -722,7 +792,12 @@ def _render_results(outdir: Path, distance: str) -> None:
     if not node_rows:
         st.info("No sequences passed QC for this network scope.")
         return
-    if not (distance == "both" and view["metric"] == "snp"):
+    if view["metric"] == "iap":
+        # The IAP clusters have their own labels (registry track 'iap'), in their merged table.
+        node_rows = viz.apply_persistent_labels(
+            node_rows, viz.persistent_label_map(_read_csv_rows(outdir / "clusters.iap.csv"))
+        )
+    elif not (distance == "both" and view["metric"] == "snp"):
         # Persistent labels belong to the primary metric's merged table; per-genotype
         # tables borrow them from it.
         node_rows = viz.apply_persistent_labels(

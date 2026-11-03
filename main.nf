@@ -25,6 +25,12 @@ workflow {
     if ((params.patient_column || params.sample_column) && !params.metadata) {
         error "--patient_column / --sample_column require --metadata <csv> containing those columns"
     }
+    if (params.iap_model && !params.metadata) {
+        error "--iap_model requires --metadata <csv> with a ${params.date_column} column"
+    }
+    if (params.iap_model && ((params.iap_alpha as double) < 0 || (params.iap_alpha as double) > 1)) {
+        error "--iap_alpha must be between 0 and 1 (got ${params.iap_alpha})"
+    }
     if (params.update_registry && !params.registry) {
         error "--update_registry requires --registry <directory>"
     }

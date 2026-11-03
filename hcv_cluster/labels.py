@@ -397,7 +397,9 @@ def backup_registry(source: Path, target: Path, run_id: str) -> Path | None:
     if not present:
         return None
     destination = target / BACKUP_DIR / run_id
-    destination.mkdir(parents=True, exist_ok=True)
+    if destination.exists():  # two label passes in one second (main and IAP clusters): keep the earlier, untouched copy
+        return destination
+    destination.mkdir(parents=True)
     for name in present:
         shutil.copy2(source / name, destination / name)
     for old in sorted(path for path in (target / BACKUP_DIR).iterdir() if path.is_dir())[:-MAX_BACKUPS]:

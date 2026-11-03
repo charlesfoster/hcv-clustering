@@ -12,6 +12,10 @@ and ``prep.py prep-align`` commands)::
 
     resolve-ids -> genotype -> align (per subtype) -> select-variants (per subtype)
         -> cluster (per subtype and method) -> merge -> label -> audit
+
+``iap-pairs`` (per subtype, optional) also reads the clustering FASTA after select-variants;
+``iap-merge`` concatenates its tables, and ``iap-support`` builds the IAP clusters and compares
+them with the main ones.
 """
 
 from __future__ import annotations
@@ -23,9 +27,9 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
-from . import audit, labels, metadata, methods, prep, variants, workflow
+from . import audit, iap, iap_support, labels, metadata, methods, prep, variants, workflow
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -235,6 +239,70 @@ def annotate_clusters(
     apply_patient_sizes(clusters_csv, metadata_rows, patient_column, sample_column)
 
 
+def write_iap_support(
+    clusters_csv: Path,
+    links_csv: Path,
+    pairs_csv: Path,
+    alpha: float,
+    out_dir: Path,
+    variants_csv: Path | None = None,
+    metadata_rows: Sequence[Mapping[str, Any]] = (),
+    patient_column: str | None = None,
+    sample_column: str | None = None,
+    *,
+    registry: Path | None = None,
+    update_registry: bool = False,
+    registry_out: Path | None = None,
+    prefix: str = iap_support.DEFAULT_LABEL_PREFIX,
+    label_date: str | None = None,
+    genotype_tables: Callable[[str, str], Path] | None = None,
+    allow_mismatch: bool = False,
+) -> iap_support.SupportSummary:
+    """Write the IAP links and clusters, label them, and compare them with the main clusters.
+
+    ``clusters_csv`` / ``links_csv`` are the run's primary (labelled) tables. With
+    ``genotype_tables`` (genotype, kind -> path) the IAP clusters and links are also written
+    per genotype, which is what the network plots read.
+    """
+    if not 0 <= alpha <= 1:
+        raise ValueError(f"--iap-alpha must be between 0 and 1, got {alpha}")
+    iap_clusters = out_dir / iap_support.CLUSTERS_FILENAME
+    summary = iap_support.write_links_and_clusters(
+        links=links_csv,
+        pairs=pairs_csv,
+        clusters=clusters_csv,
+        alpha=alpha,
+        out_links=out_dir / iap_support.LINKS_FILENAME,
+        out_edges=out_dir / iap_support.EDGES_FILENAME,
+        out_clusters=iap_clusters,
+    )
+    annotate_clusters(iap_clusters, variants_csv, metadata_rows, patient_column, sample_column)
+    if registry is not None:
+        label_clusters(
+            iap_clusters,
+            registry=registry,
+            update_registry=update_registry,
+            track=iap_support.TRACK,
+            definition=iap_support.label_definition(alpha),
+            prefix=prefix,
+            label_date=label_date,
+            out_clusters=iap_clusters,
+            out_labels=out_dir / iap_support.LABELS_FILENAME,
+            out_changes=out_dir / iap_support.CHANGES_FILENAME,
+            registry_out=registry_out,
+            outdir_label=str(out_dir),
+            name="IAP cluster labels",
+            allow_mismatch=allow_mismatch,
+        )
+    iap_support.write_comparison(clusters_csv, iap_clusters, out_dir / iap_support.COMPARISON_FILENAME, summary)
+    if genotype_tables is not None:
+        for clusters_path in iap_support.write_genotype_tables(
+            iap_clusters, out_dir / iap_support.EDGES_FILENAME, genotype_tables
+        ):
+            annotate_clusters(clusters_path, variants_csv, metadata_rows, patient_column, sample_column)
+    return summary
+
+
 def check_grouping_columns(
     metadata_rows: Sequence[Mapping[str, Any]], *columns: str | None
 ) -> None:
@@ -356,6 +424,7 @@ def label_clusters(
     registry_out: Path | None = None,
     outdir_label: str = "",
     allow_mismatch: bool = False,
+    name: str = "Cluster labels",
 ) -> labels.LabelResult:
     """Add the persistent ``cluster_label`` column and write label reports."""
     rows = read_csv_rows(clusters_csv)
@@ -404,7 +473,7 @@ def label_clusters(
     counts = {kind: sum(1 for e in result.events if e["event"] == kind) for kind in ("created", "split", "merged")}
     labelled = [member for member, label in result.labels.items() if label]
     summary = (
-        f"Cluster labels: {len({partition[member] for member in labelled})} labelled cluster(s) "
+        f"{name}: {len({partition[member] for member in labelled})} labelled cluster(s) "
         f"covering {len(labelled)} sequence(s); {counts['created'] + counts['split']} new, "
         f"{counts['merged']} merged"
     )
@@ -544,6 +613,11 @@ def _add_patient_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Metadata column identifying the physical sample (for cluster_samples)")
 
 
+def _add_iap_region_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--region", default=iap.CALIBRATED_REGION)
+    parser.add_argument("--region-strategy", default="fixed")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="hcv-stage",
@@ -631,6 +705,44 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-labels", type=Path, default=Path("cluster_labels.csv"))
     p.add_argument("--out-changes", type=Path, default=Path("label_changes.csv"))
     p.set_defaults(func=_cmd_label)
+
+    p = sub.add_parser("iap-pairs", help="Pairwise SNP counts and collection-date differences (IAP model)")
+    p.add_argument("--input", type=Path, required=True, help="Clustering FASTA of one subtype")
+    p.add_argument("--genotype", required=True, help="Subtype of --input; written to the subtype column")
+    p.add_argument("--metadata", type=Path, required=True)
+    p.add_argument("--date-column", default=iap.DEFAULT_DATE_COLUMN)
+    p.add_argument("--variants", type=Path, default=None)
+    _add_iap_region_arguments(p)
+    p.add_argument("--out", type=Path, default=Path(iap.IAP_FILENAME))
+    p.set_defaults(func=_cmd_iap_pairs)
+
+    p = sub.add_parser("iap-merge", help="Concatenate per-subtype IAP pair tables")
+    p.add_argument("--pairs", nargs="*", default=[], metavar="GENOTYPE=PATH")
+    p.add_argument("--out", type=Path, default=Path(iap.IAP_FILENAME))
+    p.set_defaults(func=_cmd_iap_merge)
+
+    p = sub.add_parser("iap-support", help="IAP-only clusters and their comparison with the main clusters")
+    p.add_argument("--clusters", type=Path, required=True, help="The run's clusters.csv (labelled, if it is)")
+    p.add_argument("--links", type=Path, required=True, help="The run's links.csv (same metric as --clusters)")
+    p.add_argument("--pairs", type=Path, required=True, help="The run's iap_pairs.csv")
+    p.add_argument("--alpha", type=float, default=iap.DEFAULT_ALPHA)
+    p.add_argument("--variants", type=Path, default=None)
+    _add_patient_arguments(p)
+    p.add_argument("--registry", type=Path, default=None, help="Label the IAP clusters in this registry (track 'iap')")
+    p.add_argument("--update-registry", action="store_true")
+    p.add_argument("--registry-out", type=Path, default=None)
+    p.add_argument("--label-prefix", default=iap_support.DEFAULT_LABEL_PREFIX, help="Prefix of the IAP labels")
+    p.add_argument("--label-date", default=None)
+    p.add_argument("--tables-dir", type=Path, default=None,
+                   help="Also write per-genotype <genotype>.iap.clusters.csv / .iap.links.csv here, for the plot stage")
+    p.add_argument("--outdir", type=Path, default=Path("."))
+    p.set_defaults(func=_cmd_iap_support)
+
+    p = sub.add_parser("iap-check", help="Fail at once unless the region and metadata suit --iap-model")
+    p.add_argument("--metadata", type=Path, required=True)
+    p.add_argument("--date-column", default=iap.DEFAULT_DATE_COLUMN)
+    _add_iap_region_arguments(p)
+    p.set_defaults(func=_cmd_iap_check)
 
     p = sub.add_parser("provenance", help="Write run_info.json: versions, tools and parameters")
     p.add_argument("--out", type=Path, default=Path("run_info.json"))
@@ -789,6 +901,41 @@ def _cmd_label(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_iap_check(args: argparse.Namespace) -> int:
+    iap.check_region(args.region, args.region_strategy)
+    iap.collection_dates(_load_metadata(args.metadata), args.date_column)
+    return 0
+
+
+def _cmd_iap_pairs(args: argparse.Namespace) -> int:
+    iap.check_region(args.region, args.region_strategy)
+    dates = iap.collection_dates(_load_metadata(args.metadata), args.date_column)
+    base_ids = variants.read_variants_csv(args.variants).base_sample_ids() if args.variants else {}
+    print(iap.describe(iap.write_pairs(args.input, args.genotype, dates, args.out, base_ids), args.out))
+    return 0
+
+
+def _cmd_iap_support(args: argparse.Namespace) -> int:
+    tables = None
+    if args.tables_dir is not None:
+        args.tables_dir.mkdir(parents=True, exist_ok=True)
+        tables = lambda genotype, kind: args.tables_dir / f"{genotype}.iap.{kind}.csv"  # noqa: E731
+    summary = write_iap_support(
+        args.clusters, args.links, args.pairs, args.alpha, args.outdir, args.variants,
+        _load_metadata(args.metadata), args.patient_column, args.sample_column,
+        registry=args.registry, update_registry=args.update_registry, registry_out=args.registry_out,
+        prefix=args.label_prefix, label_date=args.label_date, genotype_tables=tables,
+    )
+    print(iap_support.describe(summary, args.alpha))
+    return 0
+
+
+def _cmd_iap_merge(args: argparse.Namespace) -> int:
+    rows = iap.merge_pairs(parse_labelled_paths(args.pairs), args.out)
+    print(f"IAP model: {rows} dated pair(s) from {len(args.pairs)} subtype(s) written to {args.out}")
+    return 0
+
+
 def _cmd_provenance(args: argparse.Namespace) -> int:
     from . import provenance
 
@@ -814,12 +961,14 @@ def _cmd_plot(args: argparse.Namespace) -> int:
 
     cluster_tables, link_tables = tables(primary)
     snp_cluster_tables, snp_link_tables = tables("snp") if args.distance == "both" else ([], [])
-    for genotype, _path in cluster_tables + snp_cluster_tables:
+    iap_cluster_tables, iap_link_tables = tables("iap")  # present only if the IAP model ran
+    for genotype, _path in cluster_tables + snp_cluster_tables + iap_cluster_tables:
         (args.outdir / "by_genotype" / workflow.safe_genotype_name(genotype)).mkdir(
             parents=True, exist_ok=True
         )
     plotting.render_requested_plots(
-        args, args.outdir, metadata_rows, cluster_tables, link_tables, snp_cluster_tables, snp_link_tables
+        args, args.outdir, metadata_rows, cluster_tables, link_tables, snp_cluster_tables, snp_link_tables,
+        iap_cluster_tables, iap_link_tables,
     )
     return 0
 

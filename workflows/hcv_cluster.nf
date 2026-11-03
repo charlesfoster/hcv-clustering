@@ -1,4 +1,4 @@
-include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; AUDIT; PLOT; PROVENANCE } from '../modules/hcv_cluster.nf'
+include { RESOLVE_IDS; GENOTYPE; PREP_ALIGN; SELECT_VARIANTS; CLUSTER; MERGE; LABEL; IAP_CHECK; IAP_PAIRS; IAP_MERGE; IAP_SUPPORT; AUDIT; PLOT; PROVENANCE } from '../modules/hcv_cluster.nf'
 
 /*
  * HCV genomic clustering.
@@ -14,6 +14,9 @@ workflow HCV_CLUSTER {
     metadata
 
     main:
+    if (params.iap_model) {
+        IAP_CHECK(metadata)
+    }
     RESOLVE_IDS(fasta)
     GENOTYPE(RESOLVE_IDS.out.fasta)
 
@@ -55,8 +58,28 @@ workflow HCV_CLUSTER {
         registry = Channel.value(file(params.registry).exists() ? file(params.registry) : moduleDir.resolve("../assets/NO_REGISTRY"))
         LABEL(primary, registry)
         final_clusters = LABEL.out.clusters.map { m, f -> f }
+        // The IAP clusters are labelled in the same registry, continuing from the main labels.
+        iap_registry = params.update_registry ? LABEL.out.registry_dir : registry
     } else {
         final_clusters = primary.map { m, f -> f }
+        iap_registry = Channel.value(moduleDir.resolve("../assets/NO_REGISTRY"))
+    }
+
+    primary_links = MERGE.out.links.filter { it.name == "${methods[0]}.links.csv" }
+
+    // Optional pairwise SNP counts and collection-date differences (--iap_model): one table
+    // per subtype, then one for the whole run.
+    if (params.iap_model) {
+        IAP_PAIRS(SELECT_VARIANTS.out.clustering, RESOLVE_IDS.out.variants, metadata)
+        IAP_MERGE(IAP_PAIRS.out.collect().ifEmpty([]))
+        IAP_SUPPORT(
+            final_clusters,
+            primary_links,
+            IAP_MERGE.out,
+            RESOLVE_IDS.out.variants,
+            metadata,
+            iap_registry,
+        )
     }
 
     AUDIT(
@@ -73,16 +96,24 @@ workflow HCV_CLUSTER {
 
     // Optional network plots (--plot_network html|png|svg|both|all).
     if (params.plot_network && params.plot_network != 'none') {
-        primary_links = MERGE.out.links.filter { it.name == "${methods[0]}.links.csv" }
         secondary_tables = params.distance == 'both'
             ? MERGE.out.clusters.filter { m, f -> m == 'snp' }.map { m, f -> f }
                 .mix(MERGE.out.links.filter { it.name == 'snp.links.csv' }).collect()
             : Channel.value([])
+        // With the IAP model, its clusters are plotted too (iap_network.html next to network.html).
+        iap_merged = params.iap_model
+            ? IAP_SUPPORT.out.clusters.mix(IAP_SUPPORT.out.links).collect()
+            : Channel.value([])
+        plot_tables = CLUSTER.out.clusters.mix(CLUSTER.out.links).map { m, f -> f }
+        if (params.iap_model) {
+            plot_tables = plot_tables.mix(IAP_SUPPORT.out.genotype_tables.flatten())
+        }
         PLOT(
             final_clusters,
             primary_links,
             secondary_tables,
-            CLUSTER.out.clusters.mix(CLUSTER.out.links).map { m, f -> f }.collect().ifEmpty([]),
+            iap_merged,
+            plot_tables.collect().ifEmpty([]),
             metadata,
         )
     }

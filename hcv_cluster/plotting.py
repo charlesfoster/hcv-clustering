@@ -380,8 +380,15 @@ def render_requested_plots(
     link_tables: list[tuple[str, Path]],
     snp_cluster_tables: list[tuple[str, Path]],
     snp_link_tables: list[tuple[str, Path]],
+    iap_cluster_tables: list[tuple[str, Path]] = (),
+    iap_link_tables: list[tuple[str, Path]] = (),
 ) -> None:
-    """Render requested per-genotype and/or combined plots from completed tables."""
+    """Render requested per-genotype and/or combined plots from completed tables.
+
+    Besides the primary metric, the SNP metric (``--distance both``) and the IAP clusters
+    (when the IAP model ran) are plotted from their own tables, with ``snp_`` / ``iap_``
+    in the file names.
+    """
     if args.plot_network == "none":
         return
 
@@ -399,9 +406,17 @@ def render_requested_plots(
             )
         )
 
-    # Persistent labels are tracked for the primary metric only; its per-genotype tables
-    # carry no label column, so they borrow the labels from the merged table.
+    if iap_cluster_tables and (outdir / "clusters.iap.csv").exists():
+        metric_tables.append(
+            ("iap_", list(iap_cluster_tables), list(iap_link_tables), outdir / "clusters.iap.csv", outdir / "links.iap.csv")
+        )
+
+    # Persistent labels are tracked for the primary metric and for the IAP clusters; their
+    # per-genotype tables carry no label column, so they borrow the labels from the merged table.
     primary_labels = viz.persistent_label_map(stages.read_csv_rows(outdir / "clusters.csv"))
+    labels_by_prefix = {"": primary_labels}
+    if (outdir / "clusters.iap.csv").exists():
+        labels_by_prefix["iap_"] = viz.persistent_label_map(stages.read_csv_rows(outdir / "clusters.iap.csv"))
 
     # Build mappings from the union of every plotted metric so categories keep the
     # same colour/shape/outline as users switch plots.
@@ -413,7 +428,7 @@ def render_requested_plots(
             genotype=None,
             hide_singletons=args.plot_hide_singletons,
             metadata_rows=metadata_rows,
-            cluster_labels=primary_labels if not prefix else None,
+            cluster_labels=labels_by_prefix.get(prefix),
         )
         for row in metric_nodes:
             union_by_sample.setdefault(str(row["sample_id"]), row)
@@ -468,7 +483,7 @@ def render_requested_plots(
                     links_by_genotype[genotype],
                     file_prefix,
                     genotype=genotype,
-                    cluster_labels=primary_labels if not file_prefix else None,
+                    cluster_labels=labels_by_prefix.get(file_prefix),
                     **render_options,
                 )
         if args.plot_scope in ("combined", "both"):
@@ -480,6 +495,6 @@ def render_requested_plots(
                 merged_links,
                 file_prefix,
                 combined_layout=args.plot_combined_layout,
-                cluster_labels=primary_labels if not file_prefix else None,
+                cluster_labels=labels_by_prefix.get(file_prefix),
                 **render_options,
             )

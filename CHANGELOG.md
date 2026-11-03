@@ -9,6 +9,15 @@ change which sequences cluster together for the same input is called out as **re
 First versioned release, and the first that can run as a Nextflow pipeline.
 
 ### Added
+- **IAP model** (`--iap-model`, **Run IAP model** in the GUI, `--iap_model` in Nextflow, `hcv-stage iap-pairs`):
+  `iap_pairs.csv` with the raw SNP count, years between collection dates, SNPs per year and relatedness index
+  (a negative-binomial model, ported from the R notebook) for every dated pair within a subtype, plus a `subtype` column and a `note` column explaining empty values (`too_far_apart`, `same_day`). One table per subtype (`by_genotype/<subtype>/`) and a merged one. Needs a metadata collection date column (`--date-column`, default `sample_collection_date`; dates as `d/m/yyyy`, `yyyy-mm-dd` or `d-Mon-yy`), and
+  aborts for any region but the E1-E2 (HVR1 included) the model is calibrated for.
+- **IAP clusters** (`--iap-alpha`, default 0.05): a second clustering from the relatedness index alone
+  (`clusters.iap.csv`, `links.iap.csv`), the main links annotated with the index (`links.iap_information.csv`),
+  and `clusters.comparison.csv` (identical / contained / split / absent, in both directions). The IAP clusters
+  have their own label track (`iap`) and prefix (`--iap-label-prefix`, default `HCV_IAP`) in the same registry and their own network plots (`iap_network.*`); the GUI
+  viewer switches between main and IAP clusters.
 - **One-page progress report** (`hcv-report RUN_DIR`): a standalone command, run when a report is wanted (or at the
   end of a run with `--generate-report`; off unless asked for). Writes `report.html`, an A4 summary of a finished run: the sequence funnel, cluster
   statistics, age, sex, Indigenous status, injecting and diagnosis breakdowns from the metadata, collection months,
@@ -43,7 +52,7 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 - **Mixed-infection handling**: repeated FASTA IDs are resolved into variants instead of failing.
 - **`run_info.json`** with every run: pipeline version and commit, tool versions, reference data, parameters.
 - `hcv-stage` commands (`resolve-ids`, `plan-genotypes`, `select-variants`, `cluster`, `merge`, `label`,
-  `audit`, `plot`, `provenance`) so any workflow engine can run the pipeline step by step.
+  `audit`, `plot`, `iap-check`, `iap-pairs`, `iap-merge`, `iap-support`, `provenance`) so any workflow engine can run the pipeline step by step.
 - Region-specific default thresholds with a documented evidence basis (`docs/threshold_rationale.md`),
   HVR1-masked regions, and an absolute SNP-count linking option.
 - Reference records for all 84 catalogued subtypes ship with the package; no network access is needed.
@@ -60,9 +69,15 @@ First versioned release, and the first that can run as a Nextflow pipeline.
 - Same-sample variants of one genotype compete only if they passed region QC.
 - Tools updated: TN93 1.1, minimap2 2.31, biopython 1.88 (outputs verified identical to the previous
   versions on real and synthetic data).
+- Added `numpy` and `scipy` (the IAP relatedness index). The container lock also moves `libgcc`/`libgfortran`
+  from 15 to 16, which scipy needs; no scientific tool version changed.
 - Code reorganised into the `hcv_cluster` package (`python -m hcv_cluster`); the old flat scripts and their
   import names are gone.
 
 ### Fixed
+- The layout of a small connected component in a network plot depended on Python's per-process hash seed, so
+  the same data could be laid out differently in two runs (nodes swapped or mirrored). It is now deterministic.
+- With `--plot_network`, the Nextflow workflow replaced each `by_genotype/<subtype>` folder with one holding
+  only the plots; it now publishes just the plot files.
 - A subtype without a reference genome no longer stops the run; it is skipped and audited.
 - Reference cache files are no longer rewritten on every run, so a read-only reference directory works.

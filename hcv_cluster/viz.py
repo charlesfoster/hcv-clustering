@@ -93,7 +93,11 @@ def _graph_from_rows(
         valid_edges,
         key=lambda item: tuple(sorted((str(item["source"]), str(item["target"])))),
     ):
-        graph.add_edge(str(row["source"]), str(row["target"]), distance=float(row["distance"]))
+        graph.add_edge(
+            str(row["source"]),
+            str(row["target"]),
+            distance=float(row["distance"]) if str(row.get("distance") or "") else math.nan,
+        )
     return graph
 
 

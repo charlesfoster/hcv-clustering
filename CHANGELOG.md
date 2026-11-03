@@ -13,6 +13,10 @@ First versioned release, and the first that can run as a Nextflow pipeline.
   `iap_pairs.csv` with the raw SNP count, years between collection dates, SNPs per year and relatedness index
   (a negative-binomial model, ported from the R notebook) for every dated pair within a subtype, plus a `subtype` column and a `note` column explaining empty values (`too_far_apart`, `same_day`). One table per subtype (`by_genotype/<subtype>/`) and a merged one. Needs a metadata collection date column (`--date-column`, default `sample_collection_date`; dates as `d/m/yyyy`, `yyyy-mm-dd` or `d-Mon-yy`), and
   aborts for any region but the E1-E2 (HVR1 included) the model is calibrated for.
+- **IAP ambiguity codes and flags:** a site where either sequence carries an IUPAC ambiguity code is counted as the chance the two
+  differ (`--iap-ambiguity average`, the default; `skip` ignores such sites), the closest stand-in for the majority-base calls the
+  model was fitted on. `iap_pairs.csv` gains `compared_sites`, `ambiguous_sites` and `flags` (`low_coverage`: the pair compares
+  under 95% of the most complete sequence's sites; `noisy`: a sequence has 10 or more ambiguity codes), carried into the IAP link tables.
 - **IAP clusters** (`--iap-alpha`, default 0.05): a second clustering from the relatedness index alone
   (`clusters.iap.csv`, `links.iap.csv`), the main links annotated with the index (`links.iap_information.csv`),
   and `clusters.comparison.csv` (identical / contained / split / absent, in both directions). The IAP clusters

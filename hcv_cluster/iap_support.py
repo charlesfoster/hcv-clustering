@@ -33,8 +33,8 @@ COMPARISON_FILENAME = "clusters.comparison.csv"
 LABELS_FILENAME = "cluster_labels.iap.csv"
 CHANGES_FILENAME = "label_changes.iap.csv"
 
-LINK_FIELDS = ("raw_dist", "time_diff_years", "relatedness_index", "supported", "note")
-EDGE_FIELDS = ("source", "target", "distance", "raw_dist", "time_diff_years", "relatedness_index", "in_main")
+LINK_FIELDS = ("raw_dist", "time_diff_years", "relatedness_index", "supported", "note", "flags")
+EDGE_FIELDS = ("source", "target", "distance", "raw_dist", "time_diff_years", "relatedness_index", "in_main", "flags")
 CLUSTER_FIELDS = ("sample_id", "genotype", "cluster_id", "source_cluster_id", "cluster_size")
 NOTE_NO_DATE = "no_collection_date"  # a main link whose sequence is not in iap_pairs.csv
 
@@ -46,6 +46,7 @@ class SupportSummary:
     links: int = 0
     supported_links: int = 0
     iap_only_links: int = 0
+    flagged_iap_links: int = 0  # IAP links whose pair is flagged low_coverage or noisy
     main: Counter = field(default_factory=Counter)  # relationship of each main cluster -> count
     iap: Counter = field(default_factory=Counter)
 
@@ -100,6 +101,7 @@ def build_link_tables(
                         "time_diff_years": pair["time_diff_years"],
                         "relatedness_index": index,
                         "in_main": "TRUE" if main else "FALSE",
+                        "flags": pair.get("flags", ""),
                     }
                 )
     annotated = []
@@ -114,6 +116,7 @@ def build_link_tables(
                 "relatedness_index": index,
                 "supported": "TRUE" if index and float(index) >= alpha else "FALSE",
                 "note": pair["note"] if pair else NOTE_NO_DATE,
+                "flags": pair.get("flags", "") if pair else "",
             }
         )
     return [*link_fields, *LINK_FIELDS], annotated, edges
@@ -215,6 +218,7 @@ def write_links_and_clusters(
         links=len(link_rows),
         supported_links=sum(link["supported"] == "TRUE" for link in link_rows),
         iap_only_links=sum(edge["in_main"] == "FALSE" for edge in edges),
+        flagged_iap_links=sum(bool(edge["flags"]) for edge in edges),
     )
 
 
@@ -266,4 +270,6 @@ def describe(summary: SupportSummary, alpha: float) -> str:
         f"IAP model (alpha {alpha:g}): {summary.supported_links} of {summary.links} main link(s) supported, "
         f"{summary.iap_only_links} link(s) only the model makes; clusters: main {clusters(summary.main)}, "
         f"IAP {clusters(summary.iap)}"
+        + (f"; {summary.flagged_iap_links} of the model's links involve a flagged pair (low coverage or ambiguous)"
+           if summary.flagged_iap_links else "")
     )

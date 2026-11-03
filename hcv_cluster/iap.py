@@ -13,8 +13,14 @@ between two sequences from one transmission chain collected that far apart, unde
 negative-binomial model (``relatedness_index``). The model is calibrated for the full
 E1-E2 region (HVR1 included), so ``check_region`` refuses any other region.
 
-``raw_dist`` is the clustering pipeline's own SNP count (``methods``): sites where either
-sequence has a gap, N or ambiguity code are skipped, so indels add nothing to it.
+``raw_dist`` counts the sites where the two sequences differ. A site where either has a gap or N
+is not compared, so indels add nothing. A site where either carries an IUPAC ambiguity code is,
+by default, counted as the chance that the two differ if each takes one of its possible bases
+at random (R against A is 0.5): the best stand-in for the difference between majority-base
+calls, which is what the model was fitted on. ``--iap-ambiguity skip`` ignores those sites instead.
+Pairs are flagged where the count may mislead: ``low_coverage`` (the pair compares under 95% of
+the sites of the most complete sequence, so the count is low) and ``noisy`` (a sequence has many
+ambiguity codes, as a mixed or poor sample does).
 """
 
 from __future__ import annotations
@@ -30,14 +36,21 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from scipy.stats import nbinom
 
-from . import metadata, methods
+from . import metadata, methods, prep
 
 IAP_FILENAME = "iap_pairs.csv"
 DEFAULT_DATE_COLUMN = "sample_collection_date"
 DEFAULT_ALPHA = 0.05  # a link is IAP-supported when its relatedness index is at least this
 DATE_FORMATS = "d/m/yyyy, yyyy-mm-dd or d-Mon-yy (e.g. 5-Mar-24)"
 CALIBRATED_REGION = "e1-e2"
-IAP_FIELDS = ("seqid_1", "seqid_2", "raw_dist", "time_diff_years", "snp_rate", "subtype", "relatedness_index", "note")
+IAP_FIELDS = ("seqid_1", "seqid_2", "raw_dist", "time_diff_years", "snp_rate", "subtype", "relatedness_index", "note",
+              "compared_sites", "ambiguous_sites", "flags")
+AMBIGUITY_MODES = ("average", "skip")
+DEFAULT_AMBIGUITY = "average"
+LOW_OVERLAP = 0.95  # a pair compares less than this share of the most complete sequence's sites: low_coverage
+NOISY_AMBIGUOUS_SITES = 10  # a sequence with at least this many ambiguity codes in the region: noisy
+FLAG_LOW_COVERAGE = "low_coverage"
+FLAG_NOISY = "noisy"
 NOTE_TOO_FAR_APART = "too_far_apart"  # beyond the time range of the model: no relatedness_index
 NOTE_SAME_DAY = "same_day"  # no time between the samples: no snp_rate
 
@@ -56,12 +69,82 @@ _MONTH_NAMES = (
 )
 
 
+# IUPAC codes and the bases they stand for. N, gaps and anything else carry no information.
+_IUPAC = {"A": "A", "C": "C", "G": "G", "T": "T", "R": "AG", "Y": "CT", "K": "GT", "M": "AC", "S": "CG",
+          "W": "AT", "B": "CGT", "D": "AGT", "H": "ACT", "V": "ACG"}
+
+
+def _base_probabilities(sequences: Sequence[str]) -> np.ndarray:
+    """(sequences, sites, 4): the chance of each of A, C, G, T at each site; all zero where there is no information."""
+    table = np.zeros((256, 4), dtype=np.float32)
+    for code, bases in _IUPAC.items():
+        for base in bases:
+            table[ord(code), "ACGT".index(base)] = 1 / len(bases)
+    width = max(len(sequence) for sequence in sequences)
+    codes = np.full((len(sequences), width), ord("-"), dtype=np.uint8)
+    for row, sequence in enumerate(sequences):
+        codes[row, : len(sequence)] = np.frombuffer(sequence.upper().encode("ascii", "replace"), dtype=np.uint8)
+    return table[codes]
+
+
+@dataclass
+class PairCount:
+    id_1: str
+    id_2: str
+    distance: float  # differing sites; fractional where ambiguity codes are counted by chance
+    compared: int  # sites both sequences have a base (or a code) at
+    ambiguous: int  # of those, sites where either carries an ambiguity code
+    flags: str = ""
+
+
+def count_pairs(fasta: Path, ambiguity: str = DEFAULT_AMBIGUITY) -> list[PairCount]:
+    """Differences between every pair of sequences in a clustering FASTA, with the flags described above."""
+    if ambiguity not in AMBIGUITY_MODES:
+        raise ValueError(f"--iap-ambiguity must be one of {', '.join(AMBIGUITY_MODES)}, got {ambiguity!r}")
+    records = prep.read_fasta_records(fasta)
+    if len(records) < 2:
+        return []
+    ids = [record.header.split()[0] for record in records]
+    prob = _base_probabilities([record.sequence for record in records])
+    called = prob.sum(axis=2) > 0
+    ambiguous = called & (prob.max(axis=2) < 0.999)
+    most_complete = max(int(called.sum(axis=1).max()), 1)
+    codes_per_sequence = ambiguous.sum(axis=1)
+    pairs: list[PairCount] = []
+    for i in range(len(records) - 1):
+        j = slice(i + 1, None)
+        both = called[i] & called[j]
+        agree = np.einsum("lk,mlk->ml", prob[i], prob[j])  # the chance the two sites hold the same base
+        either = ambiguous[i] | ambiguous[j]
+        if ambiguity == "average":
+            comparable = both
+            distance = ((1 - agree) * comparable).sum(axis=1)
+        else:
+            comparable = both & ~either
+            distance = ((agree < 0.5) & comparable).sum(axis=1)
+        for offset, (dist, comp) in enumerate(zip(distance, comparable.sum(axis=1))):
+            k = i + 1 + offset
+            flags = []
+            if both[offset].sum() / most_complete < LOW_OVERLAP:
+                flags.append(FLAG_LOW_COVERAGE)
+            if max(codes_per_sequence[i], codes_per_sequence[k]) >= NOISY_AMBIGUOUS_SITES:
+                flags.append(FLAG_NOISY)
+            pairs.append(PairCount(ids[i], ids[k], float(dist), int(comp), int((both[offset] & either[offset]).sum()), ";".join(flags)))
+    return pairs
+
+
+def _count_text(value: float) -> str:
+    return str(int(round(value))) if abs(value - round(value)) < 1e-9 else f"{value:.3f}"
+
+
 @dataclass
 class PairSummary:
     pairs: int = 0
     skipped_pairs: int = 0  # pairs involving a sequence with no collection date
     undated_sequences: int = 0
     unscored_pairs: int = 0  # too far apart in time for the model to give an index
+    low_coverage_pairs: int = 0
+    noisy_pairs: int = 0
 
 
 def check_region(region: str, region_strategy: str = "fixed") -> None:
@@ -166,47 +249,55 @@ def write_pairs(
     dates: Mapping[str, datetime.date],
     out: Path,
     base_ids: Mapping[str, str] | None = None,
+    ambiguity: str = DEFAULT_AMBIGUITY,
 ) -> PairSummary:
     """Write ``IAP_FIELDS`` for every dated pair in one subtype's clustering FASTA.
 
     Dates are keyed by metadata sample_id, so renamed mixed-infection variants
     (``SAMPLE__v2``) are looked up through ``base_ids``. Pairs collected on the same day
     are kept, with an empty ``snp_rate`` (undefined for them) but a relatedness index.
+    ``ambiguity`` is how IUPAC codes are counted (see the module notes); the model needs a whole
+    number, so a fractional ``raw_dist`` is rounded to the nearest for the index only.
     """
     base_ids = base_ids or {}
     summary = PairSummary()
     undated: set[str] = set()
-    pairs: list[tuple[str, str, int, float]] = []
+    pairs: list[tuple[PairCount, float]] = []
     if _fasta_has_records(fasta):
-        for id_1, id_2, snp_count, _sites, _p_distance in methods.compute_snp_distances_detailed(fasta):
-            date_1 = dates.get(base_ids.get(id_1, id_1))
-            date_2 = dates.get(base_ids.get(id_2, id_2))
+        for count in count_pairs(fasta, ambiguity):
+            date_1 = dates.get(base_ids.get(count.id_1, count.id_1))
+            date_2 = dates.get(base_ids.get(count.id_2, count.id_2))
             if date_1 is None or date_2 is None:
                 summary.skipped_pairs += 1
-                undated.update(i for i, d in ((id_1, date_1), (id_2, date_2)) if d is None)
+                undated.update(i for i, d in ((count.id_1, date_1), (count.id_2, date_2)) if d is None)
                 continue
-            pairs.append((id_1, id_2, snp_count, years_between(date_1, date_2)))
+            pairs.append((count, years_between(date_1, date_2)))
     summary.undated_sequences = len(undated)
     summary.pairs = len(pairs)
 
-    indices = relatedness_index([p[2] for p in pairs], [p[3] for p in pairs])
+    indices = relatedness_index([np.floor(p.distance + 0.5) for p, _ in pairs], [years for _, years in pairs])
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=IAP_FIELDS)
         writer.writeheader()
-        for (id_1, id_2, snp_count, years), index in zip(pairs, indices):
+        for (count, years), index in zip(pairs, indices):
             writer.writerow(
                 {
-                    "seqid_1": id_1,
-                    "seqid_2": id_2,
-                    "raw_dist": snp_count,
+                    "seqid_1": count.id_1,
+                    "seqid_2": count.id_2,
+                    "raw_dist": _count_text(count.distance),
                     "time_diff_years": f"{years:.6f}",
-                    "snp_rate": f"{snp_count / years:.6f}" if years else "",
+                    "snp_rate": f"{count.distance / years:.6f}" if years else "",
                     "subtype": subtype,
                     "relatedness_index": "" if np.isnan(index) else f"{index:.10g}",
                     "note": NOTE_TOO_FAR_APART if np.isnan(index) else ("" if years else NOTE_SAME_DAY),
+                    "compared_sites": count.compared,
+                    "ambiguous_sites": count.ambiguous,
+                    "flags": count.flags,
                 }
             )
+            summary.low_coverage_pairs += FLAG_LOW_COVERAGE in count.flags
+            summary.noisy_pairs += FLAG_NOISY in count.flags
     summary.unscored_pairs = int(np.isnan(indices).sum())
     return summary
 
@@ -235,4 +326,7 @@ def describe(summary: PairSummary, out: Path) -> str:
         )
     if summary.unscored_pairs:
         text += f"; {summary.unscored_pairs} pair(s) are too far apart in time for a relatedness index"
+    if summary.low_coverage_pairs or summary.noisy_pairs:
+        text += (f"; flagged: {summary.low_coverage_pairs} low_coverage, {summary.noisy_pairs} noisy "
+                 "(see the flags column; their counts may mislead)")
     return text

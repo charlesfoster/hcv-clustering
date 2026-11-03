@@ -712,6 +712,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--metadata", type=Path, required=True)
     p.add_argument("--date-column", default=iap.DEFAULT_DATE_COLUMN)
     p.add_argument("--variants", type=Path, default=None)
+    p.add_argument("--ambiguity", choices=iap.AMBIGUITY_MODES, default=iap.DEFAULT_AMBIGUITY,
+                   help="Count IUPAC ambiguity codes as the chance two sites differ (average) or ignore those sites (skip)")
     _add_iap_region_arguments(p)
     p.add_argument("--out", type=Path, default=Path(iap.IAP_FILENAME))
     p.set_defaults(func=_cmd_iap_pairs)
@@ -911,7 +913,7 @@ def _cmd_iap_pairs(args: argparse.Namespace) -> int:
     iap.check_region(args.region, args.region_strategy)
     dates = iap.collection_dates(_load_metadata(args.metadata), args.date_column)
     base_ids = variants.read_variants_csv(args.variants).base_sample_ids() if args.variants else {}
-    print(iap.describe(iap.write_pairs(args.input, args.genotype, dates, args.out, base_ids), args.out))
+    print(iap.describe(iap.write_pairs(args.input, args.genotype, dates, args.out, base_ids, args.ambiguity), args.out))
     return 0
 
 

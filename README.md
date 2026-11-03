@@ -237,7 +237,7 @@ pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --iap-model
 | column | meaning |
 | --- | --- |
 | `seqid_1`, `seqid_2` | the two sequences |
-| `raw_dist` | number of nucleotides that differ between them (the `snp_count` of `snp.csv`) |
+| `raw_dist` | number of nucleotides that differ between them. Whole numbers unless ambiguity codes are counted by chance (see below) |
 | `time_diff_years` | years between the two collection dates, e.g. 1/7/1995 to 1/12/1997 is 29 months = 2.416667 |
 | `snp_rate` | `raw_dist / time_diff_years` (empty when both were collected on the same day) |
 | `subtype` | the subtype both sequences belong to (e.g. `1a`) |
@@ -245,6 +245,12 @@ pixi run hcv-cluster run -i samples.fasta --metadata metadata.csv --iap-model
 | `note` | why a value is empty: `too_far_apart` (no `relatedness_index`, the pair is more than about 22 years apart) or `same_day` (no `snp_rate`, the samples were collected on the same day); otherwise empty |
 
 The index is `1 - CDF` of a negative binomial whose mean is `4.417 * years + 9.634` and whose variance is `10.383²` (parameters in `hcv_cluster/iap.py`). Same-day pairs get an index (the model expects about 9.6 differences at 0 years) but no `snp_rate`.
+
+Three more columns say how far to trust a pair's count: `compared_sites` (sites where both sequences have a base or a code), `ambiguous_sites` (of those, sites where either carries an IUPAC ambiguity code) and `flags`.
+
+**Ambiguity codes.** The model was fitted on majority-base calls (no ambiguity codes), so a site where either sequence carries a code is counted, by default, as the chance that the two differ if each takes one of its possible bases at random (R against A is 0.5). That is the expected difference between majority-base calls when the majority is unknown, and it matches how `--ambiguities average` treats them for TN93. `--iap-ambiguity skip` ignores those sites instead, which hides differences wherever a sequence is mixed. Gaps and `N` are never compared. The model needs a whole number, so a fractional `raw_dist` is rounded to the nearest for `relatedness_index` only.
+
+**Flags.** `low_coverage`: the pair compares under 95% of the sites of the most complete sequence in its subtype, so the count is low and the pair looks more related than it is. `noisy`: a sequence has 10 or more ambiguity codes in the region, as a mixed or poor sample does. Flagged pairs are kept, not removed: the flags are carried into `links.iap.csv` and `links.iap_information.csv`, and the run says how many of the model's links involve one. Removing them would discard links that a coverage correction would often keep, so filter on `flags` yourself if a stricter set is wanted.
 
 Each subtype's table is written to `by_genotype/<subtype>/iap_pairs.csv`, and `iap_pairs.csv` in the results directory is all of them concatenated (in subtype order).
 

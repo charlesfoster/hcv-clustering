@@ -28,6 +28,9 @@ workflow {
     if (params.iap_model && !params.metadata) {
         error "--iap_model requires --metadata <csv> with a ${params.date_column} column"
     }
+    if (params.iap_model && !(params.iap_ambiguity in ['average', 'skip'])) {
+        error "--iap_ambiguity must be average or skip (got ${params.iap_ambiguity})"
+    }
     if (params.iap_model && ((params.iap_alpha as double) < 0 || (params.iap_alpha as double) > 1)) {
         error "--iap_alpha must be between 0 and 1 (got ${params.iap_alpha})"
     }

@@ -519,7 +519,7 @@ def command_run(args: argparse.Namespace) -> int:
         if args.iap_model:
             iap_tables[genotype] = genotype_dir / iap.IAP_FILENAME
             summary = iap.write_pairs(
-                clustering_fasta, genotype, collection_dates, iap_tables[genotype], iap_base_ids
+                clustering_fasta, genotype, collection_dates, iap_tables[genotype], iap_base_ids, args.iap_ambiguity
             )
             print(f"--> {iap.describe(summary, iap_tables[genotype])}")
         print()
@@ -853,6 +853,18 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
             f"(the main links with their index), {iap_support.EDGES_FILENAME} and {iap_support.CLUSTERS_FILENAME} "
             f"(clusters from the model's links alone, labelled in --registry as track 'iap') and "
             f"{iap_support.COMPARISON_FILENAME} (main against IAP clusters)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iap-ambiguity",
+        choices=iap.AMBIGUITY_MODES,
+        default=iap.DEFAULT_AMBIGUITY,
+        help=(
+            "With --iap-model: how IUPAC ambiguity codes count in a pair's SNP total. average (default): the "
+            "chance the two sites differ if each takes one of its bases at random (R against A is 0.5), the "
+            "closest stand-in for the majority-base calls the model was fitted on; skip: ignore those sites. "
+            "Gaps and N are never compared. Pairs with low coverage or many ambiguity codes are flagged "
+            "in the flags column."
         ),
     )
     run_parser.add_argument(

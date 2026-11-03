@@ -99,6 +99,7 @@ def test_iap_pairs_are_written_per_subtype_and_merged(tmp_path: Path) -> None:
     rows_1b = list(csv.DictReader(tables["1b"].open()))
     assert list(rows_1a[0]) == [
         "seqid_1", "seqid_2", "raw_dist", "time_diff_years", "snp_rate", "subtype", "relatedness_index", "note",
+        "compared_sites", "ambiguous_sites", "flags",
     ]
     assert {r["subtype"] for r in rows_1a} == {"1a"} and [(r["seqid_1"], r["seqid_2"]) for r in rows_1b] == [("e", "f"), ("e", "g"), ("f", "g")]
     assert list(csv.DictReader(merged.open())) == rows_1a + rows_1b  # subtype order, no cross-subtype pairs
@@ -113,13 +114,13 @@ def test_iap_pairs_are_written_per_subtype_and_merged(tmp_path: Path) -> None:
     assert set(by_pair) == {("a", "b"), ("a", "c"), ("a", "d__v1"), ("b", "c"), ("b", "d__v1"), ("c", "d__v1")}
     assert by_pair[("a", "b")] == {
         "seqid_1": "a", "seqid_2": "b", "raw_dist": "1", "time_diff_years": "2.416667", "snp_rate": "0.413793",
-        "subtype": "1a", "note": "",
+        "subtype": "1a", "note": "", "compared_sites": "30", "ambiguous_sites": "0", "flags": "",
     }
     assert by_pair[("a", "c")]["raw_dist"] == "1"  # the deletion adds nothing to the count
     assert by_pair[("b", "c")] == {
         "seqid_1": "b", "seqid_2": "c", "raw_dist": "0", "time_diff_years": "0.000000", "snp_rate": "",
-        "subtype": "1a", "note": "same_day",
-    }
+        "subtype": "1a", "note": "same_day", "compared_sites": "27", "ambiguous_sites": "0", "flags": "low_coverage",
+    }  # a 3-site deletion in a 30-site fixture is 10% of the sites; in real E1-E2 it would not reach the 5% flag
     assert by_pair[("a", "d__v1")]["time_diff_years"] == "0.000000"  # collected the same day as a
 
 
@@ -225,3 +226,38 @@ def test_iap_labels_have_their_own_prefix_and_numbering_in_the_same_registry(tmp
     iap_labels = {r["cluster_label"] for r in csv.DictReader((tmp_path / "clusters.iap.csv").open())}
     assert main == {"HCV-2610-001", "HCV-2610-002"}
     assert iap_labels == {"HCV_IAP-2610-001", "HCV_IAP-2610-002"}  # numbered from 001, not after the main labels
+
+
+def _alignment(tmp_path: Path, **sequences: str) -> Path:
+    path = tmp_path / "aln.fasta"
+    path.write_text("".join(f">{name}\n{seq}\n" for name, seq in sequences.items()))
+    return path
+
+
+def test_ambiguity_codes_count_as_the_chance_two_sites_differ(tmp_path: Path) -> None:
+    fasta = _alignment(tmp_path, a="ACGTACGTAC", b="ACGTACGTAT", c="ACGTACGTRC", d="RCGTACGTRC")
+    by = {(p.id_1, p.id_2): p for p in iap.count_pairs(fasta, "average")}
+    assert by["a", "b"].distance == 1 and by["a", "b"].ambiguous == 0  # a plain difference
+    assert by["a", "c"].distance == 0.5 and by["a", "c"].ambiguous == 1  # R against A: they differ half the time
+    assert by["c", "d"].distance == 1.0 and by["c", "d"].ambiguous == 2  # R against A and R against R: half each
+    skipped = {(p.id_1, p.id_2): p for p in iap.count_pairs(fasta, "skip")}
+    assert skipped["a", "c"].distance == 0 and skipped["a", "c"].compared == 9  # the ambiguous site is not compared
+    assert skipped["a", "b"].distance == 1
+    with pytest.raises(ValueError, match="--iap-ambiguity"):
+        iap.count_pairs(fasta, "guess")
+
+
+def test_pairs_are_flagged_when_their_count_may_mislead(tmp_path: Path) -> None:
+    full = "ACGT" * 25  # 100 sites
+    noisy = "".join("R" if i % 9 == 0 else c for i, c in enumerate(full))  # 12 ambiguity codes
+    fasta = _alignment(tmp_path, full=full, same=full, partial=full[:60] + "-" * 40, noisy=noisy)
+    flags = {(p.id_1, p.id_2): p.flags for p in iap.count_pairs(fasta)}
+    assert flags["full", "same"] == ""
+    assert flags["full", "partial"] == "low_coverage"  # compares 60 of the 100 sites of the most complete sequence
+    assert flags["full", "noisy"] == "noisy" and flags["partial", "noisy"] == "low_coverage;noisy"
+    dates = {n: datetime.date(2024, 1, 1) for n in ("full", "same", "partial", "noisy")}
+    out = tmp_path / "pairs.csv"
+    summary = iap.write_pairs(fasta, "1a", dates, out)
+    assert (summary.low_coverage_pairs, summary.noisy_pairs) == (3, 3) and "flagged: 3 low_coverage, 3 noisy" in iap.describe(summary, out)
+    rows = {(r["seqid_1"], r["seqid_2"]): r for r in csv.DictReader(out.open())}
+    assert rows["full", "same"]["raw_dist"] == "0" and rows["full", "noisy"]["raw_dist"] != "0"  # whole numbers stay whole; noisy ones are fractional

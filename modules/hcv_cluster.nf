@@ -261,7 +261,7 @@ process IAP_PAIRS {
     ${stage('iap-pairs')} \\
         --input ${clustering} --genotype ${genotype} --metadata ${metadata} --date-column ${params.date_column} \\
         --variants ${variants} --region ${params.region ?: 'e1-e2'} --region-strategy ${params.region_strategy} \\
-        --out ${genotype}.iap_pairs.csv
+        --ambiguity ${params.iap_ambiguity} --out ${genotype}.iap_pairs.csv
     """
 }
 

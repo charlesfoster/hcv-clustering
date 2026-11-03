@@ -581,7 +581,7 @@ def build_report(
         note = ""
         if len(known) >= 4:
             q1, _, q3 = statistics.quantiles(known, n=4)
-            note = f"median {statistics.median(known):g}, IQR {q1:g}–{q3:g}"
+            note = f"median {statistics.median(known):g}, IQR {q1:.0f}–{q3:.0f}"  # ages are whole years; quartiles of a small sample are not
         demo.append(_breakdown("Age", [(_band(a) if a is not None else "Not recorded", c) for a, c in zip(ages, in_cluster)],
                                min_cell, order=["<25", "25–34", "35–44", "45–54", "55+"], note=note))
     sex_names = {"M": "Male", "F": "Female"}

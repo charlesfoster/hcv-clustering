@@ -9,6 +9,7 @@ change which sequences cluster together for the same input is called out as **re
 First versioned release, and the first that can run as a Nextflow pipeline.
 
 ### Added
+- **Metadata and FASTA helper scripts** (`scripts/h2seq_metadata/`, standard library only): `h2seq_metadata.py` turns a REDCap export (plus the residual metadata) into the metadata file, building each sample ID from name initials, date of birth, sex and interview date; `residual_metadata.py` reformats the residual sheet; `update_master_fasta.py` adds an h2seq run's consensuses to a master FASTA, with an all-N record for a sample that gave none.
 - **IAP model** (`--iap-model`, **Run IAP model** in the GUI, `--iap_model` in Nextflow, `hcv-stage iap-pairs`):
   `iap_pairs.csv` with the raw SNP count, years between collection dates, SNPs per year and relatedness index
   (a negative-binomial model, ported from the R notebook) for every dated pair within a subtype, plus a `subtype` column and a `note` column explaining empty values (`too_far_apart`, `same_day`). One table per subtype (`by_genotype/<subtype>/`) and a merged one. Needs a metadata collection date column (`--date-column`, default `sample_collection_date`; dates as `d/m/yyyy`, `yyyy-mm-dd` or `d-Mon-yy`), and

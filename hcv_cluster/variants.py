@@ -19,6 +19,7 @@ Remaining ties fall to input order.
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -97,6 +98,32 @@ def _normalized_sequence(sequence: str) -> str:
 def completeness(sequence: str) -> int:
     """Count unambiguous nucleotides; gaps, Ns and IUPAC ambiguity codes do not count."""
     return sum(1 for base in _normalized_sequence(sequence) if base in "ACGT")
+
+
+# A subtype or repeat tag some people add to an ID (``S_1a``, ``S_3a_TR2``). Sample IDs themselves have no underscore,
+# so this only ever removes a tag, and ``S__v2`` (a variant name made here) is not matched.
+_ID_TAG = re.compile(r"(?:_(?:[1-8][a-z]{1,2}|TR\d+))+$", re.IGNORECASE)
+
+
+def strip_id_tag(sample_id: str) -> str:
+    """``S_1a`` and ``S_3a_TR2`` are both the sample ``S``."""
+    return _ID_TAG.sub("", sample_id)
+
+
+def strip_header_tags(records: list[prep.FastaRecord]) -> tuple[list[prep.FastaRecord], list[tuple[str, str]]]:
+    """Drop a tag from each header's ID (the first word; the description after it is kept), and say which changed.
+
+    Two tagged records of one sample (``S_1a``, ``S_3a``) then share an ID and are handled as a mixed infection.
+    """
+    out: list[prep.FastaRecord] = []
+    changed: list[tuple[str, str]] = []
+    for record in records:
+        first, _, rest = record.header.partition(" ")
+        plain = strip_id_tag(first)
+        if plain != first:
+            changed.append((first, plain))
+        out.append(prep.FastaRecord(f"{plain} {rest}" if rest else plain, record.sequence))
+    return out, changed
 
 
 def read_input_records(path: Path) -> list[prep.FastaRecord]:

@@ -18,7 +18,7 @@ from typing import Any
 
 import streamlit as st
 
-from . import cli, genotyping, iap, labels, metadata, prep, settings, viz
+from . import cli, genotyping, iap, labels, metadata, prep, report, settings, viz
 
 
 REGION_PRESETS_UI = (
@@ -389,15 +389,66 @@ def _run_tab() -> None:
         except ValueError as exc:
             iap_error = str(exc)
             st.error(f"Cannot run the IAP model: {iap_error}")
-    outdir = Path(st.text_input("Output directory", value="results_gui"))
+    outdir = Path(
+        st.text_input(
+            "Output directory",
+            value=str(cli.default_outdir()),
+            help="A new folder named for today's date by default, so a run does not overwrite an earlier one.",
+        )
+    )
 
     registry_choice = _registry_panel()
+    previous_run = labels.last_run_outdir(Path(registry_choice["path"])) if registry_choice["path"] else None
+    reuse_alignments = st.checkbox(
+        "Reuse alignments from a previous run",
+        help=(
+            "Unchanged samples are read from that run's alignments and only new or changed samples are aligned, "
+            "which is much faster for a growing data set. Tick this for a regular update; leave it off to align every sample."
+        ),
+    )
+    reuse_alignments_from = st.text_input(
+        "Previous results directory",
+        value=str(previous_run[0]) if previous_run else "",
+        disabled=not reuse_alignments,
+        help="Filled in from the registry's last saved run. Change it to reuse a different run's alignments.",
+    ).strip()
+    reuse_error: str | None = None
+    if reuse_alignments:
+        if previous_run and reuse_alignments_from == str(previous_run[0]):
+            st.caption(f"Registry's last saved run: {previous_run[1]}.")
+        if not reuse_alignments_from:
+            reuse_error = "Enter the previous results directory, or untick 'Reuse alignments from a previous run'."
+        elif not Path(reuse_alignments_from).expanduser().is_dir():
+            reuse_error = f"No folder at {reuse_alignments_from}."
+        if reuse_error:
+            st.error(reuse_error)
     config = _user_settings()
     write_report = st.checkbox(
         "Generate the one-page report after clustering",
         value=config.generate_report,
         help="Writes a one-page A4 report (PDF and HTML) for download. When the run saves its labels to the registry, it also shows what changed since the last report.",
     )
+
+    uploaded_status = st.file_uploader(
+        "Optional sequencing status CSV (for the report)",
+        type=["csv"],
+        disabled=not write_report,
+        help=(
+            "Columns sample_id and status (sequenced, not_attempted, pending). Samples it lists that are not in "
+            "the input FASTA are added to the report's 'samples collected' as not sequenced, pending or failed. The FASTA "
+            "decides what was sequenced, so the file need not list every sample."
+        ),
+    )
+    status_error: str | None = None
+    if uploaded_status is not None and write_report:
+        try:
+            with tempfile.TemporaryDirectory() as scratch:
+                probe = Path(scratch) / "status.csv"
+                probe.write_bytes(uploaded_status.getvalue())
+                st.success(f"Sequencing status ready: {len(report.read_sequencing_status(probe))} sample(s).")
+        except (ValueError, UnicodeDecodeError) as exc:
+            status_error = str(exc)
+            st.error(f"Sequencing status CSV is not valid: {status_error}")
 
     region, region_error = _region_picker()
 
@@ -588,15 +639,6 @@ def _run_tab() -> None:
             "Keep temporary MAFFT files",
             help="Keep MAFFT's intermediate alignment files after the run instead of deleting them — useful for debugging alignment issues.",
         )
-        reuse_alignments_from = st.text_input(
-            "Reuse alignments from results directory",
-            value="",
-            help=(
-                "Reuse unchanged samples from per-genotype prep.aligned.fasta files "
-                "under this previous results directory, and send only new or changed "
-                "samples to MAFFT. Leave blank to align every sample."
-            ),
-        )
         keep_paf = st.checkbox(
             "Keep raw minimap2 PAF file",
             help="Keep the raw minimap2 PAF alignment file from the genotyping step instead of deleting it — useful for debugging genotype assignment.",
@@ -616,6 +658,8 @@ def _run_tab() -> None:
         or region_error is not None
         or metadata_error is not None
         or iap_error is not None
+        or reuse_error is not None
+        or status_error is not None
         or registry_choice["error"] is not None,
     )
 
@@ -666,6 +710,10 @@ def _run_tab() -> None:
             else:
                 argv.append("--no-registry")  # the user chose none: ignore any registry in the settings file
             argv.append("--generate-report" if write_report else "--no-generate-report")
+            if write_report and uploaded_status is not None:
+                status_path = outdir / "input_sequencing_status.csv"
+                status_path.write_bytes(uploaded_status.getvalue())
+                argv.extend(["--sequencing-status", str(status_path)])
             if verbose:
                 argv.append("--verbose")
             if dry_run:
@@ -679,8 +727,8 @@ def _run_tab() -> None:
                 argv.append("--force-download")
             if keep_temp:
                 argv.append("--keep-temp")
-            if reuse_alignments_from.strip():
-                argv.extend(["--reuse-alignments", reuse_alignments_from.strip()])
+            if reuse_alignments:
+                argv.extend(["--reuse-alignments", reuse_alignments_from])
             if snp_count_threshold is not None:
                 argv.extend(["--snp-count-threshold", str(snp_count_threshold)])
             if keep_paf:

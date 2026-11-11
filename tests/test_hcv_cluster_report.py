@@ -201,3 +201,24 @@ def test_cluster_map_layout_does_not_depend_on_the_python_process() -> None:
         for seed in (1, 2, 3, 4)
     }
     assert len(outputs) == 1
+
+
+def test_sequencing_status_adds_only_samples_that_never_reached_the_input(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    run = _run_dir(tmp_path)  # ten samples in the input
+    sheet = _write(tmp_path / "status.csv", ["sample_id", "status"], [
+        {"sample_id": "SMP-A1", "status": "sequenced"},     # in the input: the FASTA decides, the list changes nothing
+        {"sample_id": "smp-f1", "status": "sequenced"},     # the input sample SMP-F1 in another letter case: not an extra
+        {"sample_id": "X1_1a", "status": "not_attempted"}, {"sample_id": "X1_3a_TR2", "status": "Not attempted"},  # tags dropped: one sample
+        {"sample_id": "X2", "status": "not-attempted"}, {"sample_id": "SMP-A2_1a", "status": "sequenced"},  # the tag is dropped before matching the input
+        {"sample_id": "X3", "status": "pending"}, {"sample_id": "X4", "status": "Fail"},  # an old word, read as sequenced: X4 belongs in the FASTA
+        {"sample_id": "X5", "status": "sequenced"},         # says sequenced, but is not in the input: counted, and warned about
+        {"sample_id": "", "status": "Fail"},
+    ])
+    page = report.build_report(run, min_cell=3, sequencing_status=sheet).read_text()
+    assert "<b>15</b><span>samples collected" in page and "<b>10</b><span>sequenced" in page  # 10 + the five that are not in the input
+    warnings = capsys.readouterr().err
+    assert "X4" in warnings and "X5" in warnings and "letter case" in warnings
+    plain = report.build_report(run, min_cell=3).read_text()
+    assert "<b>10</b><span>samples collected" in plain  # no sheet: as before
+    with pytest.raises(ValueError, match="'sample_id' and 'status'"):
+        report.read_sequencing_status(_write(tmp_path / "bad.csv", ["id", "state"], [{"id": "a", "state": "b"}]))

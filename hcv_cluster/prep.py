@@ -2078,8 +2078,10 @@ def write_outputs(
     core_e2_end = selection.end if is_core_e2_family else ""
     core_e2_length = selection.length if is_core_e2_family else ""
     for record in records:
-        sample_id = record.header
-        trimmed = extracted[sample_id]
+        # A sequence is identified by the first word of its header, in every table and FASTA this writes for the
+        # steps after prep. Anything after it is a description (the alignment below keeps whole headers for its cache).
+        sample_id = record.header.split()[0]
+        trimmed = extracted[record.header]
         metrics = compute_coverage(trimmed, selection.length)
         passed = metrics.coverage_fraction >= min_coverage
         reason = "" if passed else removal_reason
@@ -2140,7 +2142,7 @@ def write_genotype_validation_csv(rejected: dict[str, str], path: Path) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(("sample_id", "reason"))
-        writer.writerows(rejected.items())
+        writer.writerows((header.split()[0], reason) for header, reason in rejected.items())
 
 
 def write_qc_csv(rows: list[dict[str, str | int | float | bool]], path: Path) -> None:

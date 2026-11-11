@@ -25,6 +25,9 @@ First versioned release, and the first that can run as a Nextflow pipeline.
   and `clusters.comparison.csv` (identical / contained / split / absent, in both directions). The IAP clusters
   have their own label track (`iap`) and prefix (`--iap-label-prefix`, default `HCV_IAP`) in the same registry and their own network plots (`iap_network.*`); the GUI
   viewer switches between main and IAP clusters.
+- **Subtype and repeat tags on FASTA IDs are dropped** (`S_1a`, `S_3a_TR2` become `S`) when the input is read, with a note saying how many; two tagged records of one sample are then handled as a mixed infection.
+- **Dated output folders and alignment reuse from the registry:** `--outdir` now defaults to `results_YYYY-MM-DD` (`_2`, `_3`... if it exists, in the GUI too), so a run does not overwrite an earlier one. The registry records each run's absolute output folder, and the GUI's **Reuse alignments from a previous run** box fills in the last saved run's folder from it.
+- **Samples collected but not sequenced** (`--sequencing-status CSV` on `hcv-report` and `hcv-cluster run`, an upload in the GUI): the report's funnel counts, as collected, the samples the sheet lists that are not in the input FASTA, and notes how many are not sequenced or pending (statuses `sequenced`, `not_attempted`, `pending`; a sample marked `sequenced` that is not in the FASTA is named in a warning). The FASTA decides what was sequenced, so the sheet need not be complete or consistent, and subtype or repeat tags on its IDs (`_1a`, `_3a_TR2`) are dropped; the snapshot stores the collected count for the next report.
 - **One-page progress report** (`hcv-report RUN_DIR`): a standalone command, run when a report is wanted (or at the
   end of a run with `--generate-report`; off unless asked for). Writes `report.html`, an A4 summary of a finished run: the sequence funnel, cluster
   statistics, age, sex, Indigenous status, injecting and diagnosis breakdowns from the metadata, collection months,
@@ -82,6 +85,7 @@ First versioned release, and the first that can run as a Nextflow pipeline.
   import names are gone.
 
 ### Fixed
+- A FASTA header with a description after the ID (`>S1 1a_EF407457.1`, as h2seq writes) made every such sequence fail at region QC ("no region QC result"), and put the whole header in the cluster and link tables where it did not match the metadata. A sequence is now identified by the first word of its header in everything written after prep, so a header with a description gives the same results as one with the ID alone.
 - The layout of a small connected component in a network plot depended on Python's per-process hash seed, so
   the same data could be laid out differently in two runs (nodes swapped or mirrored). It is now deterministic.
 - With `--plot_network`, the Nextflow workflow replaced each `by_genotype/<subtype>` folder with one holding

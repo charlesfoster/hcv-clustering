@@ -317,6 +317,19 @@ def load_registry(directory: Path) -> Registry:
     return registry
 
 
+def last_run_outdir(directory: Path) -> tuple[Path, str] | None:
+    """The output folder and date of the registry's latest saved run whose folder still holds alignments.
+
+    Lets a later run offer to reuse that run's alignments. Runs that did not save their labels, and
+    folders that have been moved or deleted, are skipped.
+    """
+    for row in reversed(_read_csv(directory / RUNS_FILE)):
+        folder = Path(row["outdir"])
+        if row["committed"] == "true" and any(folder.glob("by_genotype/*/prep.aligned.fasta")):
+            return folder, row["date"]
+    return None
+
+
 def save_registry(registry: Registry, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     _write_csv_atomic(

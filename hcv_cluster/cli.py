@@ -150,7 +150,7 @@ def _apply_cluster_labels(args: argparse.Namespace, outdir: Path, clusters_csv: 
         out_clusters=clusters_csv,
         out_labels=outdir / "cluster_labels.csv",
         out_changes=outdir / "label_changes.csv",
-        outdir_label=str(outdir),
+        outdir_label=str(outdir.resolve()),
         allow_mismatch=args.allow_registry_mismatch,
     )
 
@@ -190,8 +190,18 @@ def _write_sample_outputs(
     )
 
 
+def default_outdir(base: Path = Path(".")) -> Path:
+    """``results_YYYY-MM-DD`` (``_2``, ``_3``... if that folder exists), so a new run never lands on an old one."""
+    stem = base / f"results_{datetime.date.today().isoformat()}"
+    candidate, n = stem, 1
+    while candidate.exists():
+        n += 1
+        candidate = stem.with_name(f"{stem.name}_{n}")
+    return candidate
+
+
 def command_run(args: argparse.Namespace) -> int:
-    outdir: Path = args.outdir
+    outdir: Path = args.outdir or default_outdir()
     input_path: Path = Path(args.input)
     genotype_fasta_dir = outdir / "genotype_fastas"
     genotype_csv = outdir / "genotypes.csv"
@@ -598,7 +608,7 @@ def _generate_report(args: argparse.Namespace, outdir: Path) -> None:
     try:
         written = report.build_report(
             outdir, title=args.report_title or report.DEFAULT_TITLE, logo=args.report_logo, registry=args.registry,
-            save_snapshot=bool(args.registry and args.update_registry),
+            save_snapshot=bool(args.registry and args.update_registry), sequencing_status=args.sequencing_status,
         )
         print(f"One-page report: {written}")
         pdf = report.write_pdf(written, written.with_suffix(".pdf"))
@@ -659,9 +669,9 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
     run_parser.add_argument(
         "-o", "--outdir",
         metavar="PATH",
-        default=Path("results"),
+        default=None,
         type=Path,
-        help="Output directory (default: results)",
+        help="Output directory (default: results_YYYY-MM-DD, with _2, _3... if that folder exists)",
     )
     run_parser.add_argument(
         "--metadata",
@@ -789,6 +799,11 @@ def build_parser(show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument("--report-title", metavar="STR", default=None, help=adv("Report heading (default: the H2Seq title)"))
+    run_parser.add_argument(
+        "--sequencing-status", metavar="CSV", type=Path, default=None,
+        help="With --generate-report: a CSV of sample_id,status (sequenced, not_attempted, pending). Samples it lists "
+             "that are not in the input count as collected but not sequenced; the input FASTA decides what was sequenced.",
+    )
     run_parser.add_argument("--report-logo", metavar="FILE", type=Path, default=None, help=adv("Report logo (default: the bundled H2Seq logo)"))
     run_parser.add_argument(
         "--label-prefix",

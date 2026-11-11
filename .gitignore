@@ -21,6 +21,7 @@ test_data/
 results/
 new_results/
 results_*/
+inputs/
 
 # Log files written by the prep stage alongside output prefixes
 *.log

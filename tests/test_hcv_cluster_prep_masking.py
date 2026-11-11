@@ -56,3 +56,23 @@ def test_write_outputs_masks_n_in_clustering_fasta_but_not_aligned_fasta(tmp_pat
         rows = list(csv.DictReader(handle))
     assert rows[0]["n_bases"] == "2"
     assert rows[0]["passed_qc"] == "true"
+
+
+def test_a_header_description_is_not_part_of_the_id_in_later_steps(tmp_path: Path) -> None:
+    """``>S1 1a_EF407457.1`` is the sample ``S1``: the clustering FASTA, QC table and validation table name it ``S1``."""
+    import logging
+
+    selection = prep.RegionSelection(
+        expression="core-e2-nohvr1", strategy="fixed", segments=(prep.RegionSegment("region", 1, 10, "test", ""),),
+    )
+    header = "S1 1a_EF407457.1"
+    prep.write_outputs(
+        records=[prep.FastaRecord(header, "ACGTACGTAC")], query_alignment={header: "ACGTACGTAC"}, reference_aligned="AAAAAAAAAA",
+        extracted={header: "ACGTACGTAC"}, selection=selection, spec=prep.ReferenceSpec(genotype="1a", accession="TEST.1"),
+        out_prefix=tmp_path / "prep", min_coverage=0.5, logger=logging.getLogger("test"),
+    )
+    assert (tmp_path / "prep.clustering.fasta").read_text().splitlines()[0] == ">S1"
+    with (tmp_path / "prep.qc.csv").open(newline="", encoding="utf-8") as handle:
+        assert [row["sample_id"] for row in csv.DictReader(handle)] == ["S1"]
+    prep.write_genotype_validation_csv({header: "conflicting subtype"}, tmp_path / "prep.genotype_validation.csv")
+    assert (tmp_path / "prep.genotype_validation.csv").read_text().splitlines()[1] == "S1,conflicting subtype"

@@ -24,21 +24,23 @@ import html
 import json
 import mimetypes
 import os
+import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Collection, Mapping, Sequence
 
-from . import __version__, labels, methods, settings
+from . import __version__, labels, methods, settings, variants
 
 REPORT_FILENAME = "report.html"
 DEFAULT_TITLE = "H2Seq HCV sequencing & transmission-cluster update"
 DEFAULT_LOGO: Path | None = Path(__file__).with_name("data") / "h2seq_logo.png"  # replaced by --logo, removed by --no-logo
 DATE_FORMATS = ("%d/%m/%Y", "%Y-%m-%d", "%d-%b-%y", "%d-%b-%Y", "%d-%B-%Y", "%d %b %Y", "%d %B %Y")  # d/m/yyyy, yyyy-mm-dd, 5-Mar-24
-MAX_LOCATIONS = 20  # locations named in the location table (all of them, unless there are more than fit); the rest are combined
+MAX_LOCATIONS = 15  # locations named in the location table (all of them, unless there are more than fit on the page); the smallest are combined
 MAP_CLUSTERS = 5  # clusters drawn on the map, keyed a, b, c… in the largest-clusters table
 # Metadata columns recognised without being named (compared lower-case, spaces as underscores).
 COLUMN_NAMES = {
@@ -100,6 +102,7 @@ table.demo { table-layout: fixed; margin-bottom: 9px } table.demo td.lab { overf
 table.demo th.title { font-size: 10.5px; color: @INK@; padding-left: 4px; overflow: visible }
 .demos { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start }
 .funnel .step b em { font-style: normal; font-size: 11px; font-weight: 600; color: #1c6b3a }
+.notrun { color: @MUTE@; font-size: 9.5px; margin: -4px 0 8px }
 b.new { color: @RED@; font-size: 8.5px } td.up { color: #1c6b3a; font-weight: 600 }
 svg { width: 100%; height: auto; display: block }
 .legend { font-size: 9px; color: @MUTE@; display: flex; gap: 3px 8px; flex-wrap: wrap; margin-top: 2px }
@@ -376,10 +379,85 @@ def _breakdown(title: str, keyed: Sequence[tuple[str, bool]], min_cell: int, ord
             f"{body}</table>")
 
 
-def _state_of(rows: Sequence[Mapping[str, str]], received: int | None, date: datetime.date | None) -> dict:
+# What a sequencing-status list can say about a sample that never reached the input FASTA, in the order the report lists them.
+# ``sequenced`` means sequencing was attempted, so the sample belongs in the FASTA (an all-N consensus too). Pass, Borderline
+# and Fail, the words an earlier list used, are read as ``sequenced``: pass or fail is decided during clustering.
+_NOT_IN_RUN = {"not attempted": "not sequenced", "not sequenced": "not sequenced", "pending": "awaiting sequencing"}
+_SEQUENCED = {"sequenced", "pass", "borderline", "fail"}
+_REPORTED_DONE = "marked sequenced but not in the input"
+
+
+def read_sequencing_status(path: Path) -> dict[str, str]:
+    """``sample_id -> status`` from a CSV with ``sample_id`` and ``status`` columns (names matched ignoring case and spaces).
+
+    A trailing subtype or repeat tag on an ID (``_1a``, ``_3a_TR2``) is dropped, so ``S_1a`` and ``S_3a`` are one sample,
+    ``S``, and the first row's status is kept.
+    """
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        names = {(name or "").strip().casefold(): name for name in reader.fieldnames or []}
+        if "sample_id" not in names or "status" not in names:
+            raise ValueError(f"{path}: the sequencing status file needs 'sample_id' and 'status' columns, found {list(names)}")
+        out: dict[str, str] = {}
+        for row in reader:
+            sample = variants.strip_id_tag((row[names["sample_id"]] or "").strip())
+            if sample:
+                out.setdefault(sample, (row[names["status"]] or "").strip())  # a repeated ID keeps its first status
+    return out
+
+
+def _sequenced_samples(audit: Sequence[Mapping[str, str]]) -> set[str]:
+    """The samples in the run's input: renamed mixed-infection variants (``S__v2``) count once, as ``S``."""
+    return {r.get("base_sample_id") or r["sample_id"] for r in audit}
+
+
+def _reconcile_status(status: Mapping[str, str], sequenced: set[str]) -> tuple[Counter, list[str], list[str]]:
+    """Samples the sheet lists that are not in the input, counted by what the sheet says, plus warnings.
+
+    The input FASTA decides what was sequenced; the sheet only adds samples that never reached it (not
+    sequenced, pending, failed), because it need not list every sample (residuals, older batches) and
+    a failed sample is not necessarily in the FASTA. An ID that matches a sequenced sample ignoring case or
+    spaces is that sample, not an extra one.
+    """
+    folded = {s.casefold() for s in sequenced}
+    absent: Counter = Counter()
+    warnings: list[str] = []
+    reported: list[str] = []
+    unknown: Counter = Counter()
+    for sample, value in status.items():
+        if sample in sequenced:
+            continue
+        if sample.casefold() in folded:
+            warnings.append(f"{sample}: matched to the input sample that differs only in letter case")
+            continue
+        key = re.sub(r"[\s_-]+", " ", value.casefold())  # Not_attempted, not-attempted and "not attempted" are one word
+        if key in _NOT_IN_RUN:
+            absent[_NOT_IN_RUN[key]] += 1
+        elif key in _SEQUENCED:
+            absent[_REPORTED_DONE] += 1
+            reported.append(sample)
+        else:
+            unknown[value or "(blank)"] += 1
+            absent[f"status '{value or '(blank)'}'"] += 1
+    if reported:
+        shown = ", ".join(sorted(reported)[:10]) + (" ..." if len(reported) > 10 else "")
+        warnings.append(f"{len(reported)} sample(s) the status file marks as sequenced are not in the input FASTA, "
+                        f"which should hold every sample with sequencing attempted (an all-N consensus too): {shown}")
+    if unknown:
+        warnings.append("unrecognised status value(s) in the status file: " + ", ".join(f"{k} ({n})" for k, n in unknown.items()))
+    return absent, reported, warnings
+
+
+def _not_in_run_note(absent: Counter) -> str:
+    order = [*dict.fromkeys(_NOT_IN_RUN.values()), _REPORTED_DONE]
+    parts = [f"{absent[k]} {k}" for k in order if absent[k]] + [f"{n} {k}" for k, n in absent.items() if k not in order]
+    return f"<p class='notrun'>Collected but not in this run: {_e(', '.join(parts))}.</p>" if parts else ""
+
+
+def _state_of(rows: Sequence[Mapping[str, str]], received: int | None, date: datetime.date | None, collected: int | None = None) -> dict:
     """What a report showed, in a form that lets the next one say what changed."""
     named = Counter(r["cluster_label"] for r in rows if int(r["cluster_size"]) > 1 and r.get("cluster_label") not in (None, "", "UNASSIGNED"))
-    return {"date": date.isoformat() if date else "", "received": received, "passed": len(rows),
+    return {"date": date.isoformat() if date else "", "collected": collected or received, "received": received, "passed": len(rows),
             "clustered": sum(int(r["cluster_size"]) > 1 for r in rows), "sizes": dict(named),
             "ids": sorted(r["sample_id"] for r in rows)}
 
@@ -390,7 +468,7 @@ def _run_state(run_dir: Path) -> dict:
         raise FileNotFoundError(f"{run_dir} has no metadata.surviving_samples.csv: is it a finished run?")
     info_file = run_dir / "run_info.json"
     created = json.loads(info_file.read_text()).get("created", "") if info_file.exists() else ""
-    return _state_of(earlier, len(_read(run_dir / "sample_audit.csv")) or None,
+    return _state_of(earlier, len(_sequenced_samples(_read(run_dir / "sample_audit.csv"))) or None,
                      datetime.date.fromisoformat(created[:10]) if created else None)
 
 
@@ -416,6 +494,7 @@ def _compare_state(previous: Mapping[str, object], rows: Sequence[Mapping[str, s
     change = {c: len(m) - was.get(name_of[c], 0) for c, m in members.items()}
     return {
         "date": datetime.date.fromisoformat(previous["date"]) if previous.get("date") else None,
+        "collected": previous.get("collected"),
         "received": previous.get("received"),
         "passed": previous["passed"],
         "clustered": previous["clustered"],
@@ -476,6 +555,7 @@ def build_report(
     since: Path | None = None,
     registry: Path | None = None,
     save_snapshot: bool = False,
+    sequencing_status: Path | None = None,
     chart_from: datetime.date | None = None,
     chart_months: int | None = None,
     active_months: int = 6,
@@ -491,7 +571,9 @@ def build_report(
     (made with the same label registry): clusters are then flagged new or grown since it.
     Without ``since``, the report is compared with the last one saved to ``registry`` (see
     ``save_snapshot``), so "since the last report" needs no folder to be remembered. ``logo``
-    defaults to the bundled H2Seq logo; ``no_logo`` leaves it out.
+    defaults to the bundled H2Seq logo; ``no_logo`` leaves it out. ``sequencing_status`` is a CSV of
+    ``sample_id,status`` (see ``_reconcile_status``): the samples it lists that are not in the run's input
+    are added to the funnel's "samples collected", and warnings about it go to stderr.
     The two time charts start at ``chart_from``, or ``chart_months`` back from the latest sample;
     by default they show the whole study up to 36 months. A cluster is active if it has a sample
     in the last ``active_months`` months of the data; ``active_only`` limits the map, timelines and
@@ -519,7 +601,13 @@ def build_report(
     ind_col = _pick(fields, indigenous_column, "indigenous")
     date_col = _pick(fields, date_column, "date")
 
-    received = len(audit)
+    sequenced = _sequenced_samples(audit)
+    received = len(sequenced)
+    absent: Counter = Counter()
+    if sequencing_status is not None:
+        absent, _, status_warnings = _reconcile_status(read_sequencing_status(sequencing_status), sequenced)
+        for warning in status_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
     passed = sum(r["overall_status"] == "pass" for r in audit)
     in_cluster = [int(r["cluster_size"]) > 1 for r in rows]
     clustered = [r for r, c in zip(rows, in_cluster) if c]
@@ -544,10 +632,9 @@ def build_report(
         logo = DEFAULT_LOGO
 
     # the two rows of headline numbers
-    collected = received  # placeholder: the number of samples collected is not in the run's files yet
-    before = growth and growth["received"]
-    funnel = [(collected, "samples collected", None, before),
-              (received, "sequenced", _pct(received, collected), before),
+    collected = received + sum(absent.values())  # without a status file, every sample received counts as collected
+    funnel = [(collected, "samples collected", None, growth and (growth["collected"] or growth["received"])),
+              (received, "sequenced", _pct(received, collected), growth and growth["received"]),
               (passed, "passed QC and genotyped", _pct(passed, received), growth and growth["passed"]),
               (len(clustered), "in a cluster", _pct(len(clustered), passed), growth and growth["clustered"])]
     funnel_html = "".join(
@@ -596,11 +683,10 @@ def build_report(
             keyed = [(_present(r[column]), c) for r, c in zip(rows, in_cluster)]
             keyed = [((indigenous(v) if column == ind_col else names.get(v, v)), c) for v, c in keyed]
             demo.append(_breakdown(heading, keyed, min_cell, order=order))
-    first_column: list[str] = []  # fill the left column to about half the table rows, so the two end level
-    for panel in demo:
-        if sum(p.count("<tr>") for p in first_column) < sum(p.count("<tr>") for p in demo) / 2:
-            first_column.append(panel)
-    second_column = [p for p in demo if p not in first_column]
+    # keep the panels in order and split them where the taller of the two columns is shortest, so the two end level
+    rows_in = [p.count("<tr>") for p in demo]
+    split = min(range(len(demo) + 1), key=lambda i: max(sum(rows_in[:i]), sum(rows_in[i:])))
+    first_column, second_column = demo[:split], demo[split:]
     demo_html = (f"<div><h2>Who is in the data</h2><div class='demos'><div>{''.join(first_column)}</div><div>{''.join(second_column)}</div></div>"
                  f"<p class='note'>Passing QC. Bars: relative size. In cluster: share of the group in a cluster.</p></div>") if demo else ""
 
@@ -744,7 +830,7 @@ def build_report(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
     if save_snapshot and registry is not None and any(r.get("cluster_label") not in (None, "", "UNASSIGNED") for r in rows):
-        write_snapshot(registry, _state_of(rows, received, report_date))  # the next report compares with this one
+        write_snapshot(registry, _state_of(rows, received, report_date, collected))  # the next report compares with this one
     return out
 
 
@@ -764,6 +850,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help="Cluster label registry: the report is compared with the last one saved to it (default: the registry in your settings)")
     p.add_argument("--save-snapshot", action="store_true",
                    help="Remember this report in the registry, so the next one shows what changed since it")
+    p.add_argument("--sequencing-status", type=Path, default=None, metavar="CSV",
+                   help="CSV of sample_id,status (sequenced, not_attempted, pending). Samples it lists that are not in "
+                        "the run's input are added to 'samples collected'; the input decides what was sequenced")
     p.add_argument("--location-column", default=None, help="Default: a column named location, site or setting")
     p.add_argument("--date-column", default=None, help="Collection date column (default: sample_collection_date, collection_date or DOC)")
     p.add_argument("--age-column", default=None, help="Default: a column named age")
@@ -788,6 +877,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = p.parse_args(argv)
     if a.logo is not None and not a.logo.is_file():
         p.error(f"--logo: no such file: {a.logo}")
+    if a.sequencing_status is not None and not a.sequencing_status.is_file():
+        p.error(f"--sequencing-status: no such file: {a.sequencing_status}")
     try:
         registry = a.registry or settings.load().registry
         if registry is not None and (a.registry is not None or registry.is_dir()):
@@ -795,7 +886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if registry is None and a.save_snapshot:
             p.error("--save-snapshot needs a registry (--registry DIR, or one in your settings)")
         written = build_report(
-            a.run_dir, a.out, title=a.title, logo=a.logo, no_logo=a.no_logo, registry=registry, save_snapshot=a.save_snapshot, location_column=a.location_column, date_column=a.date_column,
+            a.run_dir, a.out, title=a.title, logo=a.logo, no_logo=a.no_logo, registry=registry, save_snapshot=a.save_snapshot, sequencing_status=a.sequencing_status, location_column=a.location_column, date_column=a.date_column,
             age_column=a.age_column, sex_column=a.sex_column, diagnosis_column=a.diagnosis_column,
             injecting_column=a.injecting_column, indigenous_column=a.indigenous_column, min_cell=a.min_cell, since=a.since,
             chart_from=a.chart_from, chart_months=a.chart_months, active_months=a.active_months, active_only=a.active_only,

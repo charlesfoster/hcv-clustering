@@ -55,7 +55,10 @@ def resolve_ids(
     input_path: Path, out_fasta: Path | None, out_variants: Path | None
 ) -> tuple[list[prep.FastaRecord], variants.VariantPlan]:
     """Drop exact repeats and rename distinct same-ID sequences (mixed infections)."""
-    input_records = variants.read_input_records(input_path)
+    input_records, tagged = variants.strip_header_tags(variants.read_input_records(input_path))
+    if tagged:
+        shown = ", ".join(f"{old} -> {new}" for old, new in tagged[:5]) + (" ..." if len(tagged) > 5 else "")
+        print(f"NOTE: {len(tagged)} FASTA ID(s) carried a subtype or repeat tag (_1a, _TR2), which was dropped: {shown}")
     plan = variants.resolve_duplicate_ids(input_records)
     if out_fasta is not None:
         prep.write_fasta_records(plan.records, out_fasta)
@@ -291,7 +294,7 @@ def write_iap_support(
             out_labels=out_dir / iap_support.LABELS_FILENAME,
             out_changes=out_dir / iap_support.CHANGES_FILENAME,
             registry_out=registry_out,
-            outdir_label=str(out_dir),
+            outdir_label=str(Path(out_dir).resolve()),
             name="IAP cluster labels",
             allow_mismatch=allow_mismatch,
         )

@@ -91,3 +91,14 @@ def test_metadata_joins_on_base_sample_id() -> None:
     assert [row["location"] for row in joined] == ["P1", "P1"]
     assert report.missing_metadata_sample_ids == ()
     assert report.unknown_metadata_sample_ids == ()
+
+
+def test_subtype_and_repeat_tags_are_dropped_from_fasta_ids_and_the_sample_becomes_a_mixed_infection() -> None:
+    records = [prep.FastaRecord("S1_1a_TR2 first sample", "ACGTACGT"), prep.FastaRecord("S1_3a", "ACGTTCGT"),
+               prep.FastaRecord("S2", "ACGT"), prep.FastaRecord("S3__v2", "ACGA")]  # a variant name is not a tag
+    plain, changed = variants.strip_header_tags(records)
+    assert [r.header for r in plain] == ["S1 first sample", "S1", "S2", "S3__v2"]
+    assert changed == [("S1_1a_TR2", "S1"), ("S1_3a", "S1")]
+    plan = variants.resolve_duplicate_ids(plain)
+    assert [v.sequence_id for v in plan.variants if v.status == "kept"] == ["S1__v1", "S1__v2"]  # two sequences of one sample
+

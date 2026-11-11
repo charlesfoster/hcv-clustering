@@ -73,6 +73,23 @@ def test_saving_labels_backs_up_the_registry_and_refuses_the_wrong_data(tmp_path
     labels.label_run(reg, "tn93", DEFINITION, _members("z"), run_id="r3", commit=True, allow_mismatch=True, **kwargs)
 
 
+def test_default_outdir_is_dated_and_the_registry_offers_the_last_saved_run(tmp_path: Path) -> None:
+    first = cli.default_outdir(tmp_path)
+    assert first.name.startswith("results_20")
+    first.mkdir()
+    assert cli.default_outdir(tmp_path).name == f"{first.name}_2"  # never lands on an earlier run
+
+    reg = tmp_path / "reg"
+    done, test_run, gone = (tmp_path / name for name in ("done", "test", "gone"))
+    for folder in (done, test_run):
+        (folder / "by_genotype" / "1a").mkdir(parents=True)
+        (folder / "by_genotype" / "1a" / "prep.aligned.fasta").write_text(">r\nA\n")
+    kwargs = dict(run_date="2026-11-03", prefix="HCV")
+    for run_id, folder, commit in (("r1", done, True), ("r2", test_run, False), ("r3", gone, True)):
+        labels.label_run(reg, "tn93", DEFINITION, _members("a"), run_id=run_id, outdir=str(folder), commit=commit, **kwargs)
+    assert labels.last_run_outdir(reg) == (done, "2026-11-03")  # skips the unsaved test run and the deleted folder
+
+
 def test_run_uses_the_registry_in_the_settings_and_writes_the_report(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     if shutil.which("tn93") is None:
         pytest.skip("needs the clustering tools (pixi run -e nf test)")

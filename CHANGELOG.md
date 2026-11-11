@@ -4,7 +4,7 @@ All notable changes to hcv-cluster. The format follows [Keep a Changelog](https:
 see [docs/RELEASING.md](docs/RELEASING.md) for what each kind of version bump means. Anything that can
 change which sequences cluster together for the same input is called out as **results-affecting**.
 
-## [0.2.0] - unreleased
+## [0.2.0] - 2026-11-12
 
 First versioned release, and the first that can run as a Nextflow pipeline.
 

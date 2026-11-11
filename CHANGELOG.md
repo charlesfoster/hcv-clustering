@@ -14,13 +14,13 @@ First versioned release, and the first that can run as a Nextflow pipeline.
   (a negative-binomial model, ported from the R notebook) for every dated pair within a subtype, plus a `subtype` column and a `note` column explaining empty values (`too_far_apart`, `same_day`). One table per subtype (`by_genotype/<subtype>/`) and a merged one. Needs a metadata collection date column (`--date-column`, default `sample_collection_date`; dates as `d/m/yyyy`, `yyyy-mm-dd` or `d-Mon-yy`), and
   aborts for any region but the E1-E2 (HVR1 included) the model is calibrated for.
 - **IAP ambiguity codes and flags:** a site where either sequence carries an IUPAC ambiguity code is counted as the chance the two
-  differ (`--iap-ambiguity average`, the default; `skip` ignores such sites), the closest stand-in for the majority-base calls the
+  differ (`--iap-ambiguity average`, the default, or **IAP ambiguity handling** in the GUI; `skip` ignores such sites), the closest stand-in for the majority-base calls the
   model was fitted on. `iap_pairs.csv` gains `compared_sites`, `ambiguous_sites` and `flags` (`low_coverage`: the pair compares
   under 95% of the most complete sequence's sites; `noisy`: a sequence has 10 or more ambiguity codes), carried into the IAP link tables.
 - **IAP cutoff sensitivity** (`iap_sensitivity.csv`): nodes, links and clusters at a fixed set of minimum indices (0.5, 0.25,
   0.1, 0.05, 0.01 and the one used), at a fixed 57-SNP threshold and for the main clustering. Descriptive and fixed on purpose: the
   cutoffs cannot be chosen, every run writes every row and nothing is ranked or tested, so it cannot be used to tune the result.
-- **IAP clusters** (`--iap-min-index`, default 0.05): a second clustering from the relatedness index alone
+- **IAP clusters** (`--iap-min-index`, default 0.5): a second clustering from the relatedness index alone
   (`clusters.iap.csv`, `links.iap.csv`), the main links annotated with the index (`links.iap_information.csv`),
   and `clusters.comparison.csv` (identical / contained / split / absent, in both directions). The IAP clusters
   have their own label track (`iap`) and prefix (`--iap-label-prefix`, default `HCV_IAP`) in the same registry and their own network plots (`iap_network.*`); the GUI

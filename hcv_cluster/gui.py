@@ -353,19 +353,35 @@ def _run_tab() -> None:
             disabled=not run_iap,
             help=f"Metadata column with each sample's collection date, as {iap.DATE_FORMATS}.",
         ).strip()
-    iap_min_index = st.number_input(
-        "IAP minimum relatedness index",
-        min_value=0.0,
-        max_value=1.0,
-        value=iap.DEFAULT_MIN_INDEX,
-        step=0.01,
-        format="%.3f",
-        disabled=not run_iap,
-        help=(
-            "Pairs with a relatedness index of at least this are linked by the IAP model. Higher is stricter: "
-            "0.05 keeps about 95% of truly related pairs, 0.5 about half."
-        ),
-    )
+    iap_col3, iap_col4 = st.columns(2)
+    with iap_col3:
+        iap_min_index = st.number_input(
+            "IAP minimum relatedness index",
+            min_value=0.0,
+            max_value=1.0,
+            value=iap.DEFAULT_MIN_INDEX,
+            step=0.01,
+            format="%.3f",
+            disabled=not run_iap,
+            help=(
+                "Pairs with a relatedness index of at least this are linked by the IAP model. Higher is stricter: "
+                "0.05 keeps about 95% of truly related pairs, 0.5 about half."
+            ),
+        )
+    with iap_col4:
+        iap_ambiguity = st.selectbox(
+            "IAP ambiguity handling",
+            iap.AMBIGUITY_MODES,
+            index=iap.AMBIGUITY_MODES.index(iap.DEFAULT_AMBIGUITY),
+            disabled=not run_iap,
+            help=(
+                "How IUPAC ambiguity codes count in a pair's SNP total. This is separate from the TN93 setting "
+                "under Advanced. average (default): the chance the two sites differ if each takes one of its "
+                "bases at random (R against A is 0.5), the closest stand-in for the majority-base calls the "
+                "model was fitted on; skip: ignore those sites. Gaps and N are never compared. The relatedness "
+                "index rounds a fractional SNP count to the nearest whole number."
+            ),
+        )
     iap_error: str | None = None
     if run_iap and metadata_error is None:
         try:
@@ -672,7 +688,14 @@ def _run_tab() -> None:
             if metadata_path is not None:
                 argv.extend(["--metadata", str(metadata_path)])
             if run_iap:
-                argv.extend(["--iap-model", "--date-column", date_column, "--iap-min-index", str(iap_min_index)])
+                argv.extend(
+                    [
+                        "--iap-model",
+                        "--date-column", date_column,
+                        "--iap-min-index", str(iap_min_index),
+                        "--iap-ambiguity", iap_ambiguity,
+                    ]
+                )
             parser = cli.build_parser()
             args = parser.parse_args(argv)
 
